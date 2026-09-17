@@ -139,11 +139,11 @@ flowchart LR
 
 В репозитории собрана детальная инженерная документация:
 
-* 📐 [**`blueprint.md`**](file:///Users/yurykurouski/code/ehu/Revamp-docs/blueprint.md) — Системный архитектурный блюпринт: описание слоев, очередей BullMQ, схемы MongoDB и диаграммы взаимодействия.
-* 📋 [**`spec.md`**](file:///Users/yurykurouski/code/ehu/Revamp-docs/spec.md) — Спецификация требований (SRS): функциональные требования, жизненный цикл лида, REST API эндпоинты.
-* 🔬 [**`research.md`**](file:///Users/yurykurouski/code/ehu/Revamp-docs/research.md) — Архитектурные исследования, ключевые решения (ADR), пользовательские сценарии (CJM) и конкурентный анализ.
-* ⏱️ [**`milestones.md`**](file:///Users/yurykurouski/code/ehu/Revamp-docs/milestones.md) — 4-недельная ускоренная дорожная карта с детализацией по дням и чек-листами Definition of Done.
-* 🤖 [**`AGENTS.md`**](file:///Users/yurykurouski/code/ehu/Revamp-docs/AGENTS.md) — Руководство и системные промпты для автономных ИИ-агентов платформы и ИИ-разработчика.
+* 📐 [**`blueprint.md`**](./blueprint.md) — Системный архитектурный блюпринт: описание слоев, очередей BullMQ, схемы MongoDB и диаграммы взаимодействия.
+* 📋 [**`spec.md`**](./spec.md) — Спецификация требований (SRS): функциональные требования, жизненный цикл лида, REST API эндпоинты.
+* 🔬 [**`research.md`**](./research.md) — Архитектурные исследования, ключевые решения (ADR), пользовательские сценарии (CJM) и конкурентный анализ.
+* ⏱️ [**`milestones.md`**](./milestones.md) — 4-недельная ускоренная дорожная карта с детализацией по дням и чек-листами Definition of Done.
+* 🤖 [**`AGENTS.md`**](./AGENTS.md) — Руководство и системные промпты для автономных ИИ-агентов платформы и ИИ-разработчика.
 
 ---
 

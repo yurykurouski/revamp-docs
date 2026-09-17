@@ -13,8 +13,8 @@
 4. Модель юнит-экономики и оптимизации вычислительных затрат.
 
 Связанные документы проекта:
-* Архитектурный проект и спецификация компонентов: [blueprint.md](file:///Users/yurykurouski/code/ehu/Revamp-docs/blueprint.md)
-* Спецификация требований к программному обеспечению: [spec.md](file:///Users/yurykurouski/code/ehu/Revamp-docs/spec.md)
+* Архитектурный проект и спецификация компонентов: [blueprint.md](./blueprint.md)
+* Спецификация требований к программному обеспечению: [spec.md](./spec.md)
 
 ---
 
@@ -280,6 +280,6 @@ flowchart TD
 4. Прозрачность и объяснимость каждого выставленного балла (Data Provenance).
 
 Готовые артефакты проекта в репозитории:
-* Архитектурный блюпринт: [`blueprint.md`](file:///Users/yurykurouski/code/ehu/Revamp-docs/blueprint.md)
-* Спецификация требований (ТЗ / SRS): [`spec.md`](file:///Users/yurykurouski/code/ehu/Revamp-docs/spec.md)
-* Консолидированный отчет об исследованиях: [`research.md`](file:///Users/yurykurouski/code/ehu/Revamp-docs/research.md)
+* Архитектурный блюпринт: [`blueprint.md`](./blueprint.md)
+* Спецификация требований (ТЗ / SRS): [`spec.md`](./spec.md)
+* Консолидированный отчет об исследованиях: [`research.md`](./research.md)

@@ -10,9 +10,9 @@
 2. **In-App Autonomous Agents (Встроенные агенты SaaS):** Специализированные ИИ-агенты внутри бэкенда платформы (Агент аудита дизайна, Агент копирайтинга MVP, Агент персонализации холодных писем).
 
 Связанные проектные документы:
-* Архитектура и стек: [blueprint.md](file:///Users/yurykurouski/code/ehu/Revamp-docs/blueprint.md)
-* Спецификация требований: [spec.md](file:///Users/yurykurouski/code/ehu/Revamp-docs/spec.md)
-* Исследования, сценарии и ADR: [research.md](file:///Users/yurykurouski/code/ehu/Revamp-docs/research.md)
+* Архитектура и стек: [blueprint.md](./blueprint.md)
+* Спецификация требований: [spec.md](./spec.md)
+* Исследования, сценарии и ADR: [research.md](./research.md)
 
 ---
 

@@ -182,7 +182,7 @@ gantt
 ---
 
 Связанные проектные документы:
-* Архитектура и стек: [`blueprint.md`](file:///Users/yurykurouski/code/ehu/Revamp-docs/blueprint.md)
-* Спецификация требований (SRS): [`spec.md`](file:///Users/yurykurouski/code/ehu/Revamp-docs/spec.md)
-* Исследования и сценарии: [`research.md`](file:///Users/yurykurouski/code/ehu/Revamp-docs/research.md)
-* Инструкции для ИИ-агентов: [`AGENTS.md`](file:///Users/yurykurouski/code/ehu/Revamp-docs/AGENTS.md)
+* Архитектура и стек: [`blueprint.md`](./blueprint.md)
+* Спецификация требований (SRS): [`spec.md`](./spec.md)
+* Исследования и сценарии: [`research.md`](./research.md)
+* Инструкции для ИИ-агентов: [`AGENTS.md`](./AGENTS.md)
