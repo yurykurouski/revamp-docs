@@ -179,6 +179,49 @@ gantt
 | **Сложности с настройкой почтовых серверов** | Высокая | Отказ от самописных SMTP-серверов в пользу проверенного API (Resend / SendGrid) с готовой доставляемостью. |
 | **Затягивание верстки UI дашборда** | Средняя | Использование готовых компонентов Material UI (`@mui/x-data-grid`, Dialog, Chips) без изобретения кастомных дизайн-систем с нуля. |
 
+## 6. Развитие после релиза (REV-21 — REV-41)
+
+После закрытия 4-недельного плана (REV-1 — REV-20) проект развивается отдельными тикетами. Начиная с REV-25 каждый баг и каждая фича проходят обязательный конвейер из `AGENTS.md` кодового репозитория: **тикет в Linear → ветка `ymorpheus/rev-<n>-...` → тесты и гейты → PR → merge → закрытие тикета**. Статусы ниже актуальны на 26.09.2026.
+
+| Задача | Содержание | Область | Статус |
+|:---:|---|---|:---:|
+| [**REV-21**](https://linear.app/revamp-proect/issue/REV-21) | Полностраничные скриншоты десктопа и мобайла и их просмотр в инспекторе | Аудит | ✅ Done |
+| [**REV-22**](https://linear.app/revamp-proect/issue/REV-22) | Перевод продукта на английский (дашборд, MVP, промпты, баннеры, письма) | Продукт | ✅ Done |
+| [**REV-23**](https://linear.app/revamp-proect/issue/REV-23) | MVP из собственного контента исходного сайта вместо шаблонов | MVP | ✅ Done |
+| [**REV-24**](https://linear.app/revamp-proect/issue/REV-24) | Локализация дашборда (en, ru, be, pl, lt) | Дашборд | ✅ Done |
+| [**REV-25**](https://linear.app/revamp-proect/issue/REV-25) | Генерация MVP на языке исходного сайта | MVP | ✅ Done |
+| [**REV-26**](https://linear.app/revamp-proect/issue/REV-26) | Поиск локальных бизнесов на картах (OSM, Google Places) | Discovery | ✅ Done |
+| [**REV-27**](https://linear.app/revamp-proect/issue/REV-27) | Интерфейс поиска бизнесов в дашборде | Discovery | ✅ Done |
+| [**REV-28**](https://linear.app/revamp-proect/issue/REV-28) | Автоопределение местоположения оператора в форме поиска | Discovery | ✅ Done |
+| [**REV-29**](https://linear.app/revamp-proect/issue/REV-29) | Ревью найденных бизнесов перед импортом в лиды | Discovery | ✅ Done |
+| [**REV-30**](https://linear.app/revamp-proect/issue/REV-30) | Генерация текстов MVP через локальный Claude Code CLI | MVP / LLM | ✅ Done |
+| [**REV-31**](https://linear.app/revamp-proect/issue/REV-31) | Перегенерация MVP для лида из дашборда | MVP | ✅ Done |
+| [**REV-32**](https://linear.app/revamp-proect/issue/REV-32) | Выбор LLM-провайдера и модели для генерации MVP | MVP / LLM | ✅ Done |
+| [**REV-33**](https://linear.app/revamp-proect/issue/REV-33) | Закрытие cookie-баннеров перед скриншотами аудита | Аудит | ✅ Done |
+| [**REV-34**](https://linear.app/revamp-proect/issue/REV-34) | Fallback при слишком длинном поле в ответе LLM | MVP / LLM | ✅ Done |
+| [**REV-35**](https://linear.app/revamp-proect/issue/REV-35) | Не предлагать при поиске бизнесы, которые уже есть в лидах | Discovery | 🔄 In Progress |
+| [**REV-36**](https://linear.app/revamp-proect/issue/REV-36) | Проверка MVP на потерю ключевых данных исходного сайта | MVP | ✅ Done |
+| [**REV-37**](https://linear.app/revamp-proect/issue/REV-37) | Сравнение MVP с исходным сайтом через LLM с проверкой цитат кодом | MVP / LLM | ✅ Done |
+| [**REV-38**](https://linear.app/revamp-proect/issue/REV-38) | Оценка сложности сайта на аудите и приоритет одностраничных сайтов-визиток | Аудит | ⏳ Backlog |
+| [**REV-39**](https://linear.app/revamp-proect/issue/REV-39) | Удалить неработающие пункты навигации в сайдбаре дашборда | Дашборд | ⏳ Backlog |
+| [**REV-40**](https://linear.app/revamp-proect/issue/REV-40) | Индикатор прогресса поиска бизнесов в фоне | Discovery | ⏳ Backlog |
+| [**REV-41**](https://linear.app/revamp-proect/issue/REV-41) | Автоматически открывать результаты поиска бизнесов, завершенного в фоне | Discovery | ⏳ Backlog |
+
+### Definition of Done для тикетов после релиза
+- [ ] Тикет в команде REV с разделами `Problem`, `Expected`, `Acceptance criteria` и меткой `Bug` / `Feature`.
+- [ ] Тесты Vitest для всех затронутых слоев (схемы, сервисы, эндпоинты, воркеры, сторы).
+- [ ] Локальные гейты пройдены: `npm run build:packages`, `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`.
+- [ ] Изменение проверено в запущенном дашборде в Chrome, без новых ошибок в консоли.
+- [ ] Новые строки интерфейса добавлены во все 5 словарей (en, ru, be, pl, lt).
+- [ ] PR с разделами `Problem` / `Changes` / `Verification` привязан к тикету; после merge тикет переведен в `Done`.
+
+### Итоги по направлениям
+* **Аудит:** полностраничные скриншоты с автопрокруткой и ограничением высоты; закрытие cookie-баннеров 11 платформ согласия и по тексту кнопки на 8 языках.
+* **Качество MVP:** контент, контакты и язык исходного сайта; никаких выдуманных данных; отчет полноты с баллом и проверенными цитатами LLM; дополнительное подтверждение при критических проблемах.
+* **LLM:** единый `LlmClient`, каталог провайдеров и моделей, выбор оператором на каждую генерацию, локальный Claude Code CLI, отчет доступности провайдеров от воркеров.
+* **Лидогенерация:** поиск на OpenStreetMap и Google Places, автоопределение города, ревью и выборочный импорт кандидатов; следующий шаг — устойчивая идентичность лидов (REV-35) и UX фонового поиска (REV-40, REV-41).
+* **Дашборд:** английский как исходный язык, локализация на 5 языков, перегенерация MVP, чек-лист полноты.
+
 ---
 
 Связанные проектные документы:

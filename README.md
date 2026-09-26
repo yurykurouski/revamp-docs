@@ -37,9 +37,10 @@
 Веб-студии, агентства и фрилансеры тратят десятки часов в неделю на ручной поиск устаревших сайтов, ручной аудит доступности и верстку коммерческих предложений с конверсией в ответ менее 2–3%.
 
 **Revamp SaaS** трансформирует процесс cold outreach в полностью автоматизированный конвейер:
+0. **Находит** локальные бизнесы с сайтами по нише и городу на OpenStreetMap или Google Places; оператор выбирает, кого взять в работу.
 1. **Анализирует** устаревший сайт за 40 секунд (замеры Core Web Vitals, доступность WCAG 2.1 AA, скриншоты и мультимодальный AI-аудит первого экрана).
-2. **Извлекает айдентику бренда** (палитра K-Means, логотип, телефоны, услуги).
-3. **Генерирует готовый адаптивный Bento-лендинг** на Tailwind CSS, размещая его в песочнице на публичном URL.
+2. **Извлекает айдентику и контент** (палитра K-Means, логотип, телефоны, услуги, тексты, отзывы, schema.org).
+3. **Генерирует готовый адаптивный Bento-лендинг** на языке исходного сайта и только из его данных, проверяет его полноту и размещает в песочнице на публичном URL.
 4. **Предоставляет оператору удобный дашборд (Side-by-Side)** для моментальной инспекции «До / После» и корректировки палитры/текста в 1 клик.
 5. **Отправляет персонализированное письмо** владельцу сайта с интерактивным прототипом и собирает полную телеметрию (открытия, клики, время на сайте).
 
@@ -47,16 +48,23 @@
 
 ## 🚀 Ключевые возможности
 
+* 🗺️ **Поиск бизнесов на картах (Discovery):**
+  * OpenStreetMap (Nominatim + Overpass, без ключа) или Google Places API (New).
+  * Автоопределение города оператора, классификация кандидатов (новые, уже в лидах, дубли, без сайта) и импорт только выбранных.
 * 🔍 **Многоуровневый детерминированный аудит:**
-  * **WCAG 2.1 AA Accessibility:** `@axe-core/puppeteer` проверяет контрастность, метки форм, alt-теги изображений.
-  * **Core Web Vitals:** Lighthouse измеряет LCP (Largest Contentful Paint), CLS, скорость ответа и наличие SSL.
-  * **Vision LLM Critique:** Мультимодальный ИИ (Claude 3.5 Sonnet / GPT-4o) выявляет 3 критические ошибки в дизайне первого экрана и 3 Quick Wins.
+  * **WCAG 2.1 AA Accessibility:** `@axe-core/playwright` проверяет контрастность, метки форм, alt-теги изображений.
+  * **Core Web Vitals:** замеры LCP, CLS, скорости ответа и наличия SSL в браузере.
+  * **Скриншоты:** первый экран и полная страница (десктоп и мобайл), cookie-баннеры закрываются автоматически.
+  * **Vision LLM Critique:** Мультимодальный ИИ выявляет 3 критические ошибки в дизайне первого экрана и 3 Quick Wins.
 * 🎨 **Универсальный модульный Bento-каркас:**
   * Сверхлегкий адаптивный HTML + Tailwind CSS бандл (< 300 Кб).
-  * Динамическая стилизация под цвета оригинального бренда без галлюцинаций.
+  * Контент, контакты и отзывы только с исходного сайта; тексты на языке сайта (UI шаблона на en, ru, be, pl, lt).
   * Автоматический подбор иконок Lucide под список услуг.
+* 🤖 **Гибкий выбор LLM:** Anthropic, OpenAI, Gemini или локальный Claude Code CLI; провайдер и модель выбираются на каждую генерацию, перегенерация — в один клик.
+* ✅ **Проверка полноты MVP:** сравнение с данными исходного сайта (код + LLM с проверяемыми цитатами), балл, чек-лист в инспекторе и предупреждение о выдуманных контактах.
 * 🛡️ **Human-In-The-Loop (HITL) Gate:**
   * Никаких автоматических отправок писем без проверки человеком.
+  * Дашборд на 5 языках (en, ru, be, pl, lt).
   * Утверждение отправки за 20 секунд с помощью горячих клавиш (`Cmd/Ctrl + Enter`).
   * Быстрый Color Picker для моментальной смены палитры во фрейме предпросмотра.
 * 📬 **Умный Email-аутрич и троттлинг:**
@@ -74,9 +82,10 @@
 
 ```mermaid
 flowchart LR
-    A["1. Ввод URL / База"] --> B["2. Playwright + Axe + Lighthouse"]
+    Z["0. Поиск на картах<br/>+ ревью оператором"] --> A
+    A["1. Ввод URL / База"] --> B["2. Playwright + Axe + Vitals<br/>+ контент сайта"]
     B --> C["3. Vision LLM & K-Means"]
-    C --> D["4. Генерация Bento MVP & S3"]
+    C --> D["4. Генерация Bento MVP<br/>+ проверка полноты & S3"]
     D --> E["5. React + MUI Дашборд<br/><b>HITL Gate</b>"]
     E -->|Аппрув оператора| F["6. BullMQ Email Dispatcher"]
     F --> G["7. Доставка клиенту"]
@@ -95,7 +104,8 @@ flowchart LR
 1. **Human-In-The-Loop (HITL):** Фоновые воркеры переводят сущности в статус `NEEDS_APPROVAL`. Отправка писем клиентам возможна **исключительно** после явного подтверждения оператором.
 2. **Детерминизм метрик (Strict Grounding):** Замеры LCP, доступности a11y, извлечение номеров телефонов, адресов и цен осуществляются детерминированным кодом, а не нейросетями.
 3. **Строгая валидация (Zod):** Все ответы LLM и входящие HTTP-запросы валидируются через схемы Zod перед записью в базу данных.
-4. **Изоляция сгенерированных MVP:** Сгенерированные прототипы запускаются на изолированном домене (`*.preview.revamp.io`) и встраиваются в дашборд через `<iframe sandbox="allow-scripts allow-same-origin">`.
+4. **Только данные исходного сайта:** MVP не содержит выдуманных контактов, отзывов и метрик; суждения LLM о полноте принимаются только с дословной цитатой, проверенной кодом.
+5. **Изоляция сгенерированных MVP:** Сгенерированные прототипы запускаются на изолированном домене (`*.preview.revamp.io`) и встраиваются в дашборд через `<iframe sandbox="allow-scripts allow-same-origin">`.
 
 ---
 
@@ -110,13 +120,13 @@ flowchart LR
 ├── packages/
 │   ├── shared-types/    # Общие TypeScript интерфейсы и DTO
 │   └── validation/      # Общие Zod-схемы для валидации данных
-├── docker/              # Конфигурации Dockerfile и docker-compose.yml
-├── AGENTS.md            # Системные инструкции для ИИ-агентов
-├── blueprint.md         # Полный архитектурный блюпринт системы
-├── milestones.md        # 4-недельный план реализации и Definition of Done
-├── research.md          # Исследования предметной области, сценарии и ADR
-└── spec.md              # Спецификация требований к программному обеспечению (SRS)
+├── deploy/              # Продакшен-деплой (Docker, Nginx, скрипты)
+├── scripts/             # Сервисные скрипты
+├── docker-compose.yml   # MongoDB 7.0, Redis 7.0, MinIO
+└── AGENTS.md            # Правила для ИИ-разработчика (конвейер тикетов, гейты)
 ```
+
+Документация (этот репозиторий, `revamp-docs`) лежит рядом с кодом как `../Revamp-docs`: `blueprint.md`, `spec.md`, `research.md`, `milestones.md`, `AGENTS.md`, `PROJECT_COMPLETION_REPORT.md`.
 
 ---
 
@@ -126,9 +136,10 @@ flowchart LR
 |---|---|
 | **Ядро & Бэкенд** | Node.js (v20+ LTS), Express.js, TypeScript |
 | **Базы данных & Очереди** | MongoDB 7.0 (Mongoose), Redis 7.0, BullMQ |
-| **Краулинг & Метрики** | Playwright Chromium, `@axe-core/puppeteer`, Google Lighthouse |
-| **AI & LLM** | Anthropic Claude 3.5 Sonnet, OpenAI GPT-4o / GPT-4o-mini |
-| **Фронтенд дашборда** | React 18+, Vite, Material UI (MUI v6), `@mui/x-data-grid`, TanStack Query v5, Zustand |
+| **Краулинг & Метрики** | Playwright Chromium, `@axe-core/playwright`, Core Web Vitals, Sharp, happy-dom |
+| **Поиск бизнесов** | OpenStreetMap Nominatim + Overpass, Google Places API (New) |
+| **AI & LLM** | Anthropic (Claude Opus 5 / Sonnet 5 / Haiku 4.5), OpenAI GPT-4o / GPT-4o-mini, Google Gemini 1.5, локальный Claude Code CLI |
+| **Фронтенд дашборда** | React 18+, Vite, Material UI (MUI v6), `@mui/x-data-grid`, TanStack Query v5, Zustand, i18next |
 | **Сгенерированный MVP** | HTML5, Tailwind CSS, Lucide Icons, Vanilla JS Tracker |
 | **Хранилище & Хостинг** | MinIO (локально), Cloudflare R2 / AWS S3, Cloudflare Pages |
 | **Email-инфраструктура** | Resend API / SendGrid API, Nodemailer, DNS MX Validator |
@@ -139,11 +150,11 @@ flowchart LR
 
 В репозитории собрана детальная инженерная документация:
 
-* 🏆 [**`PROJECT_COMPLETION_REPORT.md`**](./PROJECT_COMPLETION_REPORT.md) — **Итоговый отчет о завершении разработки:** 100% выполнение дорожной карты (`REV-1` — `REV-20`), архитектура, результаты E2E-тестирования 20 сайтов и инструкция по развертыванию на VPS Hetzner / Cloudflare.
+* 🏆 [**`PROJECT_COMPLETION_REPORT.md`**](./PROJECT_COMPLETION_REPORT.md) — **Итоговый отчет о завершении первоначальной дорожной карты** (`REV-1` — `REV-20`): архитектура на тот момент, результаты E2E-тестирования 20 сайтов и инструкция по развертыванию на VPS Hetzner / Cloudflare.
 * 📐 [**`blueprint.md`**](./blueprint.md) — Системный архитектурный блюпринт: описание слоев, очередей BullMQ, схемы MongoDB и диаграммы взаимодействия.
 * 📋 [**`spec.md`**](./spec.md) — Спецификация требований (SRS): функциональные требования, жизненный цикл лида, REST API эндпоинты.
 * 🔬 [**`research.md`**](./research.md) — Архитектурные исследования, ключевые решения (ADR), пользовательские сценарии (CJM) и конкурентный анализ.
-* ⏱️ [**`milestones.md`**](./milestones.md) — 4-недельная ускоренная дорожная карта с детализацией по дням и чек-листами Definition of Done.
+* ⏱️ [**`milestones.md`**](./milestones.md) — 4-недельная ускоренная дорожная карта с детализацией по дням, а также развитие после релиза (`REV-21` — `REV-41`) со статусами.
 * 🤖 [**`AGENTS.md`**](./AGENTS.md) — Руководство и системные промпты для автономных ИИ-агентов платформы и ИИ-разработчика.
 
 ---
@@ -178,17 +189,34 @@ REDIS_PORT=6379
 # AI Providers
 ANTHROPIC_API_KEY=your_claude_key
 OPENAI_API_KEY=your_openai_key
+GEMINI_API_KEY=
+# anthropic | openai | gemini | claude-cli | mock (пусто = первый найденный ключ)
+MVP_LLM_PROVIDER=
+# claude-cli: локальный Claude Code CLI под залогиненным аккаунтом
+CLAUDE_CLI_PATH=claude
+CLAUDE_CLI_MODEL=sonnet
+CLAUDE_CLI_TIMEOUT_MS=120000
+# Проверка полноты MVP через LLM (false = только кодом)
+MVP_COMPLETENESS_LLM=true
+MVP_COMPLETENESS_LLM_TIMEOUT_MS=90000
 
 # Object Storage (MinIO / S3)
 S3_ENDPOINT=http://localhost:9000
-S3_BUCKET=revamp-assets
+S3_BUCKET_ASSETS=revamp-assets
+S3_BUCKET_DEMOS=revamp-demos
 S3_ACCESS_KEY=minioadmin
 S3_SECRET_KEY=minioadmin
 
 # Email Outreach
+EMAIL_PROVIDER=mock
 RESEND_API_KEY=re_your_api_key
-FROM_EMAIL=outreach@revampdemo.com
+EMAIL_FROM="Revamp Team <outreach@revampdemo.com>"
+
+# Local Business Discovery (OpenStreetMap работает без ключа)
+GOOGLE_PLACES_API_KEY=
+DISCOVERY_USER_AGENT="RevampBot/0.1 (+https://revampdemo.com)"
 ```
+Полный список переменных — в `.env.example` кодового репозитория.
 
 ### 4. Запуск сервисов в режиме разработки
 ```bash
@@ -211,6 +239,7 @@ npm run dev:dashboard   # http://localhost:5173
 * 🔹 **Спринт 2 (Дни 8–14):** K-Means экстрактор палитры, модульный Bento-шаблон Tailwind, ИИ-копирайтинг и хостинг MVP в R2/S3.
 * 🔹 **Спринт 3 (Дни 15–21):** React + Material UI v6 дашборд, Kanban-доска, Side-by-Side инспектор и HITL-шлюз аппрува.
 * 🔹 **Спринт 4 (Дни 22–28):** Почтовый диспетчер с троттлингом, трекинг Dwell Time, E2E-тесты на 20 реальных сайтах и боевой деплой.
+* 🔸 **После релиза (`REV-21` — `REV-41`):** поиск бизнесов на картах, контент и язык исходного сайта в MVP, проверка полноты, выбор LLM-провайдера и перегенерация, закрытие cookie-баннеров, локализация дашборда. Статусы — в [`milestones.md`](./milestones.md#6-развитие-после-релиза-rev-21--rev-41).
 
 ---
 

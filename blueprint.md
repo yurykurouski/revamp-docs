@@ -11,8 +11,10 @@
 
 ```mermaid
 flowchart LR
-    A[Ввод URL / База лидов] --> B[Агент аудита]
-    B -->|Сырые метрики + Скриншоты| C[Модуль генерации MVP]
+    A0[Поиск по картам: OSM / Google Places] -->|Ревью и импорт оператором| A[Лиды]
+    A1[Ручной ввод URL] --> A
+    A --> B[Агент аудита]
+    B -->|Сырые метрики + Скриншоты + Контент сайта| C[Модуль генерации MVP]
     C -->|Готовое демо + Превью| D[React + MUI Дашборд]
     D -->|HITL: Ручной аппрув / Правка| E[Модуль аутрича]
     E -->|Персонализированный email| F[Клиент / Лид]
@@ -42,16 +44,23 @@ graph TB
     end
 
     subgraph Workers [Фоновые воркеры / Очереди задач]
-        W_Audit[Audit Worker: Playwright + Axe + Lighthouse]
-        W_AI[AI Worker: Vision LLM + Brand Extraction]
-        W_Gen[MVP Builder Worker: Static Site Engine]
+        W_Disc[Discovery Worker: OSM Overpass/Nominatim, Google Places]
+        W_Audit[Audit Worker: Playwright + Cookie Consent + Axe + Vitals + Site Content]
+        W_AI[AI Worker: MvpContentAgent через LlmClient]
+        W_Gen[Deploy Worker: Bento-сборка + проверка полноты + S3]
         W_Mail[Email Worker: SMTP / Resend / DNS Health]
     end
 
     subgraph Data [Хранилище данных и кэш]
         Mongo[(MongoDB: Atlas / Cluster)]
-        Redis[(Redis: BullMQ + Token Cache)]
+        Redis[(Redis: BullMQ + LLM capabilities)]
         S3[(S3-compatible Object Storage)]
+    end
+
+    subgraph External [Внешние сервисы]
+        Maps[OSM Nominatim / Overpass, Google Places API New]
+        LLM[Anthropic / OpenAI / Gemini API]
+        CLI[Локальный Claude Code CLI на хосте воркеров]
     end
 
     UI --> Gateway
@@ -62,21 +71,93 @@ graph TB
     Workers --> Mongo
     Workers --> S3
     Controllers --> Mongo
+    W_Disc --> Maps
+    W_AI --> LLM
+    W_AI --> CLI
+    W_Gen --> LLM
+    Controllers -->|reverse-geocode| Maps
 ```
+
+> Воркеры раз в 60 секунд публикуют в Redis (`revamp:llm-capabilities`, TTL 180 с) список LLM-провайдеров, которые они могут запустить (есть API-ключ, найден бинарник `claude`). API читает этот ключ для `GET /mvp/providers`, поскольку ключи и CLI живут на хосте воркеров, а не API (REV-32).
 
 ### Стек технологий:
 * **Backend:** Node.js (v20+ LTS, TypeScript), Express.js.
 * **База данных:** MongoDB (Mongoose ODM), реплика-сет, транзакции для операций статусов.
 * **Очереди и кэш:** Redis (v7+) + BullMQ (для отказоустойчивой асинхронной обработки тяжелых задач браузера и LLM).
-* **Headless Browser & Аудит:** Playwright / Puppeteer, Google Lighthouse API, `@axe-core/puppeteer`.
-* **AI & LLM:** Мультимодальные модели (Claude 3.5 Sonnet / GPT-4o) для анализа дизайна интерфейсов и генерации адаптивного HTML/Tailwind кода компонентов.
-* **Фронтенд:** React (v18+), TypeScript, Vite, Material UI (MUI v5/v6), TanStack Query, Recharts, Zustand.
+* **Headless Browser & Аудит:** Playwright (Chromium), `@axe-core/playwright`, замеры Core Web Vitals в браузере, `happy-dom` для разбора HTML сгенерированного MVP.
+* **Поиск бизнесов (Discovery):** OpenStreetMap (Nominatim + Overpass, без ключа, ODbL) и Google Places API (New) Text Search (по ключу).
+* **AI & LLM:** единый `LlmClient` для Anthropic, OpenAI, Gemini и локального Claude Code CLI; каталог провайдеров и моделей — в `@revamp/shared-types` (`LLM_PROVIDER_CATALOG`). Оператор выбирает провайдера и модель для каждой генерации MVP. LLM пишет только тексты и суждения; HTML строится детерминированным шаблоном.
+* **Фронтенд:** React (v18+), TypeScript, Vite, Material UI (MUI v6), TanStack Query, Zustand, i18next (en, ru, be, pl, lt).
 * **Email & Deliverability:** Nodemailer / Resend API / SendGrid, DKIM/SPF валидатор, генерация пикселей отслеживания и URL-редиректов.
 * **Хостинг MVP-демо:** AWS S3 / Cloudflare R2 + CloudFront / Wildcard-поддомены (`*.preview.revampsaas.io`).
 
 ---
 
 ## 3. Архитектура и спецификация модулей
+
+---
+
+### Модуль 0: Поиск локальных бизнесов на картах (Discovery) — REV-26…REV-29
+
+Модуль наполняет воронку лидами без ручного ввода URL: оператор задает нишу и локацию, система ищет бизнесы у картографического провайдера, а оператор выбирает, кого импортировать.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Op as Оператор
+    participant UI as DiscoveryModal (Дашборд)
+    participant API as API /discovery
+    participant Q as discovery-queue
+    participant W as Discovery Worker
+    participant P as OSM / Google Places
+
+    Op->>UI: Провайдер, ниша, локация, ключевое слово, лимит
+    opt Кнопка «Определить местоположение» (REV-28)
+        UI->>API: GET /discovery/reverse-geocode?lat&lng&lang
+        API->>P: Nominatim reverse (уровень города)
+        API-->>UI: "City, Country"
+    end
+    UI->>API: POST /discovery (StartDiscoverySchema)
+    API->>Q: Задача discovery
+    API-->>UI: 202 { jobId }
+    Q->>W: runDiscovery()
+    W->>P: Поиск (с запасом: часть листингов отсеется)
+    W->>W: Нормализация сайта, дедупликация по домену, сверка с лидами
+    W-->>Q: { found, candidates[] }
+    loop Поллинг
+        UI->>API: GET /discovery/:jobId
+        API-->>UI: состояние + кандидаты (new-кандидаты перепроверяются по текущим лидам)
+    end
+    Op->>UI: Выбор кандидатов в таблице ревью (REV-29)
+    UI->>API: POST /discovery/:jobId/import { externalIds }
+    API->>API: Данные берутся только из сохраненного результата задачи
+    API-->>UI: итог по каждому id (imported / existing_lead / not_importable / not_found / failed)
+    Note over API: Импортированные лиды создаются в QUEUED и сразу ставятся в audit-queue
+```
+
+#### 0.1. Провайдеры
+* **OpenStreetMap (по умолчанию, без ключа):** Nominatim превращает локацию в область Overpass (или радиус вокруг точки), Overpass возвращает объекты с тегами ниши (`OSM_NICHE_FILTERS`) и только с сайтом. Запросы идут с идентифицирующим `User-Agent` (`DISCOVERY_USER_AGENT`), как требуют правила Nominatim/Overpass; конкурентность воркера — `1`.
+* **Google Places API (New) Text Search (по ключу `GOOGLE_PLACES_API_KEY`):** официальный API вместо парсинга страниц Google Maps (парсинг нарушает ToS). Лимит Google — 20 результатов на страницу, 60 всего.
+
+#### 0.2. Классификация кандидатов
+Воркер ничего не импортирует сам: он возвращает каждый листинг со статусом `DiscoveryCandidateStatus`:
+
+| Статус | Значение |
+|---|---|
+| `new` | Бизнес с собственным сайтом, которого еще нет среди лидов; только такие можно импортировать |
+| `existing_lead` | Домен уже есть среди лидов (с `leadId`) |
+| `duplicate` | Тот же домен уже встречался в этой выдаче |
+| `no_website` | Нет сайта, либо «сайт» — профиль соцсети или каталога |
+| `invalid` | Листинг не прошел валидацию `DiscoveredBusinessSchema` |
+
+Оператору предлагается не больше `limit` новых бизнесов; пропущенные показываются с причиной.
+
+#### 0.3. Импорт и e-mail
+* Лид создается через `LeadService.createLead` (статус `QUEUED`, теги `discovered` и `source:<provider>`) и сразу уходит в `audit-queue`.
+* Если у листинга нет e-mail, лиду ставится `info@<domain>` и тег `email-guessed`; аудит заменяет его на e-mail, найденный на самом сайте.
+* Ошибки конфигурации (нет ключа, локация не найдена, HTTP 400/401/403) завершают задачу как `UnrecoverableError`; таймауты Overpass ретраятся.
+
+> **В работе (REV-35):** устойчивая идентичность лида (нормализованный домен, телефон в E.164, `source` + `externalId` листинга) и бэкфилл существующих лидов, чтобы уже импортированные бизнесы не предлагались повторно. Раздел будет обновлен после слияния.
 
 ---
 
@@ -87,31 +168,37 @@ graph TB
 ```mermaid
 flowchart TD
     Start[Старт аудита URL] --> BrowserLaunch[Инициализация Playwright Chromium]
-    BrowserLaunch --> Capture[Захват Viewport: Mobile 375px & Desktop 1440px]
+    BrowserLaunch --> Vitals[Замер Core Web Vitals мобильного контекста]
+    Vitals --> Consent[Закрытие cookie-баннера: CMP API, текст кнопки, скрытие оверлея]
+    Consent --> Capture[Захват Viewport: Mobile 375px & Desktop 1440px + Full-page]
     Capture --> ParallelWork
     
     subgraph ParallelWork [Параллельный аудит]
         Axe[A11y Engine: axe-core WCAG 2.1 AA]
-        LH[Performance Engine: Lighthouse Core Web Vitals]
-        DOM[DOM Extractor: Шрифты, Палитра, Лого, Тексты]
+        DOM[Brand DNA: Палитра K-Means, Лого, Шрифты]
+        Content[Site Content Extractor: тексты, услуги, отзывы, контакты, JSON-LD]
         SEO[Standards & SEO: OpenGraph, Meta, Viewport, SSL]
     end
 
     ParallelWork --> VisionAnalysis[Мультимодальный AI UX/UI Аудит]
     VisionAnalysis --> ScoreAggregator[Агрегатор взвешенных оценок 0-100]
-    ScoreAggregator --> SaveDB[Сохранение в MongoDB + Генерация JSON-отчета]
+    ScoreAggregator --> SaveDB[Сохранение в MongoDB]
+    SaveDB --> Chain[Lead.status = AUDITED → задача в ai-gen-queue]
 ```
 
 #### 1.1. Этапы работы агента:
 1. **Эмуляция и снятие снимков (Rendering & Screen Capture):**
-   * Запуск Playwright в Headless-режиме с отключением блокировок краулинга (эмуляция актуального User-Agent).
-   * Снятие полных скриншотов (Full-page) и первого экрана (Above-the-fold) для двух брейкпоинтов:
+   * Запуск Playwright в Headless-режиме с отключением блокировок краулинга (эмуляция актуального User-Agent). Навигация с таймаутом 25 с; браузер перезапускается каждые 20 задач.
+   * **Закрытие cookie-баннеров (REV-33):** после навигации и до первого скриншота в обоих контекстах `CookieConsentService` принимает согласие через известные CMP (OneTrust, Cookiebot, Didomi, Quantcast, Usercentrics, CookieYes, Complianz, Osano, iubenda, Termly, TrustArc), затем кликает кнопку «Принять» по тексту (en/pl/ru/be/lt/de/fr/uk, включая iframe), затем скрывает оставшиеся оверлеи и снимает блокировку скролла. Бюджет 3 с, шаг никогда не роняет аудит. Мобильные Vitals снимаются до закрытия баннера (не влияет на CLS), axe — после (сканируется разметка самого сайта). Результат сохраняется в `Audit.cookieBannerHandled`.
+   * Снятие скриншотов первого экрана (Above-the-fold) для двух брейкпоинтов:
      - Desktop: 1440x900
      - Mobile: 375x812 (iPhone 13/14 viewport)
-   * Сохранение изображений в S3/Cloudflare R2 с генерацией постоянных signed/public URL.
+   * **Полностраничные скриншоты (REV-21):** перед захватом страница прокручивается (подгрузка lazy-контента), анимации появления (AOS/WOW и т. п.) принудительно показываются, высота ограничивается (12 000 / 8 000 CSS px). Ужимается только ширина (1440 / 750 px), поэтому длинные страницы остаются читаемыми. Vision LLM по-прежнему получает только первый экран.
+   * Сохранение изображений в S3/MinIO: `screenshots/{leadId}/{desktop,mobile,desktop-full,mobile-full}.webp`.
+   * **Контент исходного сайта (REV-23):** `site-content.extractor.ts` выполняется внутри страницы и копирует из DOM (без генерации): title, meta description, H1 и заголовки, абзацы, услуги с описаниями, пункты навигации, реальные отзывы, контентные изображения (включая lazy и CSS-фоны), адрес и часы работы из видимого текста, данные schema.org `LocalBusiness` (JSON-LD: телефон, адрес, часы, рейтинг, год основания) и язык страницы. Приоритет контактов: schema.org > текстовые эвристики > совпадения по классам DOM. Результат — `Audit.extractedContent` и `Audit.extractedContacts`.
 
 2. **Оценка доступности (Accessibility / a11y):**
-   * Инжекция `@axe-core/puppeteer` в контекст страницы.
+   * Инжекция `@axe-core/playwright` в контекст страницы (после закрытия cookie-баннера).
    * Тестирование по стандартам WCAG 2.1 Level AA:
      - Цветовой контраст текста и фонов (Color Contrast Ratio < 4.5:1).
      - Отсутствующие или пустые атрибуты `alt` у изображений.
@@ -156,11 +243,13 @@ flowchart TD
         Fonts[Семейства шрифтов: Засечки / Без засечек]
     end
 
-    TokenExtractor --> TemplateSelector[Выбор семантического шаблона под нишу]
-    TemplateSelector --> AICodeGen[AI Layout & Copy Enhancement Engine]
-    AICodeGen --> CodeAssembly[Сборка легковесного SPA/HTML компонента]
-    CodeAssembly --> StaticDeploy[Деплой в S3/CloudFront на изолированный поддомен]
+    TokenExtractor --> AICodeGen[MvpContentAgent: тексты на языке сайта, Strict Grounding]
+    AICodeGen -->|Провайдер/модель, выбранные оператором| AICodeGen
+    AICodeGen --> CodeAssembly[Bento-шаблон: HTML + локализованный UI-текст]
+    CodeAssembly --> Completeness[Проверка полноты: MVP против данных исходного сайта]
+    Completeness --> StaticDeploy[Деплой в S3 revamp-demos по постоянному previewSlug]
     StaticDeploy --> OpenGraph[Генерация превью-скриншота До / После]
+    OpenGraph --> Review[Lead.status = NEEDS_APPROVAL]
 ```
 
 #### 2.1. Спецификация пайплайна генерации:
@@ -183,15 +272,34 @@ flowchart TD
      - **Interactive Booking Widget:** Интерактивное модальное окно для записи на прием / расчета стоимости.
      - **Footer & Location Map:** График работы, кликабельная интерактивная карта.
 
-3. **AI-адаптация контента (Copywriting Uplift):**
-   * LLM переписывает скучные и перегруженные тексты клиента в емкие, продающие офферы, сохраняя 100% фактической информации (цены, имена специалистов, перечень услуг).
+   * **Только реальные данные (REV-23):** шаблон не содержит выдуманных значений по умолчанию. Кнопка звонка, полоса доверия, отзывы, часы работы и контакты отображаются только при наличии извлеченных данных. Добавлены секции «О нас», hero-изображение, галерея и соцсети; адрес ведет на Google Maps. Бледный основной цвет заменяется читаемым фирменным или затемняется до контраста 3:1.
+   * **Язык сайта (REV-25):** `<html lang>` получает BCP 47-тег исходного сайта, фиксированный UI-текст шаблона (подписи секций, форма, футер) и детерминированный fallback локализованы для en, ru, be, pl, lt (для прочих языков — английский UI при корректном `lang`).
 
-4. **Компиляция, изоляция и деплой:**
+3. **AI-адаптация контента (Copywriting Uplift):**
+   * LLM переписывает тексты исходного сайта (`Audit.extractedContent`) в емкие, продающие офферы на **языке исходного сайта** (`outputLanguage`), сохраняя 100% фактической информации. Телефоны, e-mail и адреса LLM не выводит вовсе: они подставляются из проверенных данных.
+   * Каждый запуск генерирует новые тексты; сохраненные ранее на аудите не переиспользуются.
+   * Перед Zod-валидацией строки обрезаются до лимитов схемы (REV-34), поэтому одно слишком длинное поле не отбрасывает весь ответ.
+   * **Выбор провайдера и модели (REV-30, REV-32):** оператор выбирает провайдера (`anthropic`, `openai`, `gemini`, `claude-cli`, dev-only `mock`) и модель в диалоге генерации; выбор действует только на эту задачу, иначе используется значение по умолчанию воркера (`MVP_LLM_PROVIDER`, либо первый найденный API-ключ). Провайдер без ключа или с ошибкой откатывается на детерминированные тексты и **никогда** не переключается на другой платный провайдер. `MvpProject` хранит выбранные (`requestedProvider/Model`) и фактические (`provider`, `modelUsed`) значения.
+   * **Локальный Claude Code CLI (REV-30):** провайдер `claude-cli` запускает `claude -p` в headless-режиме под аккаунтом, в который залогинен CLI (без API-ключа): без инструментов, без MCP, без пользовательских настроек, во временной рабочей папке; промпт передается через stdin.
+
+4. **Проверка полноты MVP (REV-36, REV-37):**
+   * После рендеринга `MvpCompletenessService` разбирает HTML (`happy-dom`, без нового краулинга) и сверяет его с данными, извлеченными на аудите.
+   * Поля и уровни: **critical** — `businessName`, `phone`, `email`, `address`; **important** — `workingHours`, `services`, `socialLinks`; **informational** — `logo`, `images`, `testimonials`, `rating`, `foundingYear`.
+   * Статусы: `present`, `missing`, `altered` (есть, но другое), `not_in_source` (на исходном сайте нет), `unsourced` (контакт в MVP, которого нет на исходном сайте — вероятно, выдуман).
+   * Если LLM настроен (`MVP_COMPLETENESS_LLM=true`), поля судит LLM: каждый вердикт должен дословно цитировать MVP. Код принимает вердикт, только если цитата есть в тексте, ссылках или URL изображений MVP, телефон/e-mail совпадают с источником после нормализации и имеют `tel:`/`mailto:`-ссылку, а «missing» не перекрывает найденное кодом совпадение. `not_in_source` и итоговый балл (веса 3/2/1 по уровням) всегда считает код.
+   * При отсутствии провайдера, таймауте (`MVP_COMPLETENESS_LLM_TIMEOUT_MS`), ошибке или невалидном ответе после одного повтора используется сравнение только кодом; причина сохраняется в `llmError`. Сбой самого сравнения дает отчет `unverified` и никогда не роняет задачу.
+   * Отчет валидируется Zod, сохраняется в `MvpProject.completenessReport` и пересчитывается при каждой генерации. Отчет носит рекомендательный характер: он ничего не одобряет, не блокирует и не отправляет.
+
+5. **Компиляция, изоляция и деплой:**
    * Сборка страницы в один оптимизированный бандл (HTML + inline CSS/JS).
    * Инжекция аналитического скрипта трекинга (`revamp-tracker.js`): регистрирует факт входа владельца, скролл, клики по кнопкам демо.
-   * Публикация на изолированный URL:
-     `https://preview.revampsaas.io/v/:auditId` (или персональный поддомен `https://стоматология-ортодонт.revampsaas.io`).
-   * Автоматический снимок созданного лендинга через Playwright для формирования баннера «До/После» (Split-screen Comparison).
+   * Публикация в бакет `revamp-demos` по ключу `v/{previewSlug}/index.html` (slug — транслитерированное название бизнеса + 6 последних символов `leadId`).
+   * Автоматический снимок созданного лендинга через Playwright для формирования баннера «До/После» (Split-screen Comparison, 1200x630).
+
+6. **Перегенерация (REV-31):**
+   * Правила `mvpGenerationMode` (`@revamp/validation`): из `AUDITED` — первая генерация; из `MVP_READY`, `NEEDS_APPROVAL`, `AWAITING_APPROVAL`, `APPROVED` — только с `forceRegenerate`; после постановки письма в отправку (`SCHEDULED` и далее) и во время генерации — запрещено (409).
+   * Существующий проект сохраняет `previewSlug`: объекты в бакете перезаписываются (`Cache-Control: no-cache`), уже отправленная ссылка остается рабочей. `MvpProject` один на лид; обновляются `generatedAt` и `generationCount`, а превью в дашборде сбрасывает кэш по `Lead.mvpGeneratedAt`.
+   * Лид остается в `GENERATING`, пока деплой не опубликует новое превью. После исчерпания ретраев лид возвращается в `AUDITED` (первая генерация) или `NEEDS_APPROVAL` (предыдущий MVP цел), а причина пишется в `Lead.generationError`.
 
 ---
 
@@ -270,8 +378,9 @@ sequenceDiagram
 * **Компонентная система:** `@mui/material`, `@mui/icons-material`, `@mui/x-data-grid` для работы с большими таблицами лидов.
 * **Темизация:** Кастомная дизайн-система на базе Material UI с поддержкой светлой/тёмной темы, современными скруглениями (border-radius: 12px), акцентными статусными чипами (Status Chips: `Draft`, `Auditing`, `ReviewRequired`, `Sent`, `Opened`, `Clicked`).
 * **Управление состоянием и кэшем:**
-  - `TanStack Query (React Query v5)`: инвалидация кэша списков лидов, polling/WebSocket для отображения прогресса аудита в реальном времени.
-  - `Zustand`: глобальное состояние активных фильтров, модальных окон предпросмотра и текущего выбранного лида.
+  - `TanStack Query (React Query v5)`: инвалидация кэша списков лидов, polling для отображения прогресса аудита, генерации и поиска бизнесов.
+  - `Zustand`: глобальное состояние активных фильтров, модальных окон предпросмотра и текущего выбранного лида; `useDiscoveryStore` (открыт ли поиск и активная задача — переживает закрытие модалки), `useLlmChoiceStore` (последний выбранный провайдер/модель), `useLanguageStore` (язык интерфейса).
+* **Локализация (REV-24):** `i18next` + `react-i18next` с типизированными ключами. Английский словарь — источник, словари ru/be/pl/lt проверяются по нему на этапе компиляции. Язык: сохраненный выбор → язык браузера → английский; хранится в `localStorage`, `<html lang>` следует за ним. Даты форматируются по языку (для be — `ru-BY`, где у браузера нет белорусских данных). Тексты MUI core и DataGrid локализованы для en/ru/be/pl (для lt MUI локали не поставляет).
 
 #### 4.2. Ключевые экраны:
 1. **Pipeline Kanban & DataGrid:**
@@ -279,12 +388,18 @@ sequenceDiagram
 2. **Side-by-Side Audit & Comparison Inspector:**
    * Сплит-экран: Слева старый сайт с маркерами ошибок (красные оверлеи на элементах с низким контрастом или плохой версткой).
    * Справа: Интерактивный `<iframe>` со сгенерированным MVP с тулбаром смены брейкпоинтов (Desktop / Tablet / Mobile).
+   * Полностраничные скриншоты исходного сайта в прокручиваемом просмотрщике со ссылкой «Открыть в полном размере» (REV-21).
+   * Чек-лист полноты MVP (`CompletenessChecklist`, REV-36/37): поле, значение на исходном сайте, значение в MVP, статус, кто решил (LLM или код), метод и модель проверки.
+   * Кто написал тексты MVP: провайдер и модель (`MvpSourceChip`, REV-32).
 3. **HITL Review Modal (Окно подтверждения отправки):**
    * Быстрый предпросмотр темы и текста письма.
    * Кнопка инлайн-редактирования текста перед отправкой.
-   * Кнопка ручной регенерации отдельных блоков MVP (если AI ошибся с цветом или текстом).
+   * Кнопка «Перегенерировать MVP» с подтверждением и выбором провайдера/модели (REV-31, REV-32).
+   * Если критическое поле MVP отсутствует, изменено или выдумано, одобрение требует дополнительного подтверждения (REV-36).
    * Большая акцентная кнопка «Подтвердить и отправить» (`Ctrl/Cmd + Enter`).
-4. **Аналитический дашборд:**
+4. **Карточки Kanban:** кнопки «Сгенерировать MVP» (для `AUDITED`) и «Перегенерировать MVP» (для `NEEDS_APPROVAL`, `MVP_READY`, `AWAITING_APPROVAL`, `APPROVED`), чип «Пробелы в данных» при критических проблемах полноты, текст последней ошибки генерации (`generationError`).
+5. **Поиск бизнесов (`DiscoveryModal` + `DiscoveryReview`, REV-27…REV-29):** кнопка в хедере открывает форму (провайдер, ниша, локация с автоопределением, ключевое слово, лимит). После отправки модалка опрашивает задачу; ее можно свернуть кнопкой «Выполнять в фоне». По завершении показывается таблица кандидатов с предвыбранными новыми бизнесами, переключателем «Показать пропущенные» и итогом импорта.
+6. **Аналитический дашборд:**
    * Конверсионная воронка (Аудиты -> Отправлено -> Открыто -> Переходов на MVP -> Ответы).
    * График активности лидов (время нахождения на демо-сайте, клики по кнопке «Оставить заявку»).
 
@@ -292,51 +407,71 @@ sequenceDiagram
 
 ## 4. Схема базы данных (MongoDB / Mongoose)
 
+> Схемы ниже отражают фактические модели `apps/api/src/models` и `apps/workers/src/models` и типы `@revamp/shared-types` на момент REV-37. Коллекция `users` и RBAC (§7) пока не реализованы.
+
 ```mermaid
 erDiagram
     Lead ||--o{ Audit : has
+    Lead ||--o| MvpProject : "has (one per lead)"
     Audit ||--o| MvpProject : generates
-    Lead ||--o{ EmailCampaign : targets
-    EmailCampaign ||--o{ EmailLog : logs
-    MvpProject ||--o{ AnalyticsEvent : tracks
+    Lead ||--o| EmailCampaign : targets
+    Lead ||--o{ AnalyticsEvent : tracks
+    EmailCampaign ||--o{ AnalyticsEvent : tracks
 
     Lead {
         ObjectId _id PK
         string businessName
         string originalUrl
+        string domain
         string niche
         string city
         string contactEmail
         string contactPhone
         string ownerName
         string status
-        Date createdAt
+        number totalScore
+        string[] tags
+        string previewUrl
+        string comparisonBannerUrl
+        Date mvpGeneratedAt
+        string generationError
     }
 
     Audit {
         ObjectId _id PK
         ObjectId leadId FK
-        number totalScore
+        string status
         object scores
-        object rawA11yIssues
         object lighthouseMetrics
+        object a11ySummary
         object designCritique
         object extractedBrandTokens
+        object extractedContacts
+        object extractedContent
         object screenshotUrls
-        string status
+        object cookieBannerHandled
+        object generatedContent
+        boolean aiFallbackUsed
         Date completedAt
     }
 
     MvpProject {
         ObjectId _id PK
-        ObjectId auditId FK
         ObjectId leadId FK
-        string previewSubdomain
-        string publicPreviewUrl
+        ObjectId auditId FK
+        string previewSlug
+        string fullPreviewUrl
         string storageHtmlPath
-        object generatedCopy
+        string comparisonBannerUrl
+        object generatedContent
         object colorPalette
-        string comparisonImageUrl
+        object completenessReport
+        string provider
+        string modelUsed
+        string requestedProvider
+        string requestedModel
+        Date generatedAt
+        number generationCount
         boolean isPublished
     }
 
@@ -344,25 +479,31 @@ erDiagram
         ObjectId _id PK
         ObjectId leadId FK
         ObjectId mvpProjectId FK
-        string senderAccount
+        string status
         string subject
         string bodyHtml
-        string status
+        string trackingToken
+        string approvedBy
+        Date approvedAt
         Date scheduledAt
         Date sentAt
-        Date approvedAt
-        string approvedByUserId
+        object metrics
     }
 
     AnalyticsEvent {
         ObjectId _id PK
-        ObjectId mvpProjectId FK
+        ObjectId leadId FK
+        ObjectId campaignId FK
+        string trackingToken
         string eventType
         number dwellTimeSeconds
+        number scrollDepthPercent
         object metadata
         Date timestamp
     }
 ```
+
+Результаты поиска бизнесов (Discovery) в MongoDB не хранятся: список кандидатов живет в результате BullMQ-задачи `discovery-queue` в Redis, и импорт читает его оттуда.
 
 ### Детальное описание коллекций:
 
@@ -372,48 +513,67 @@ interface ILead {
   _id: Types.ObjectId;
   businessName: string;
   originalUrl: string;
-  niche: 'dental' | 'auto' | 'legal' | 'beauty' | 'construction' | 'other';
-  city?: string;
-  contactEmail: string;
+  domain: string;                 // hostname без www, в нижнем регистре
+  niche: 'dental' | 'auto' | 'legal' | 'beauty' | 'construction' | 'medical' | 'restaurant' | 'fitness' | 'other';
+  city?: string;                  // улица сюда не пишется: полный адрес хранится в Audit.extractedContacts
+  contactEmail: string;           // для лидов из Discovery может быть info@<domain> с тегом email-guessed
   contactPhone?: string;
   ownerName?: string;
-  status: 'PENDING' | 'AUDITING' | 'MVP_READY' | 'AWAITING_APPROVAL' | 'SENT' | 'ENGAGED' | 'UNSUBSCRIBED';
-  tags: string[];
+  status: LeadStatus;             // см. жизненный цикл ниже
+  totalScore?: number;
+  tags: string[];                 // discovered, source:osm|google, email-guessed
+  previewUrl?: string;
+  comparisonBannerUrl?: string;
+  mvpGeneratedAt?: Date;          // сброс кэша превью после перегенерации (REV-31)
+  generationError?: string;       // причина последнего сбоя генерации (REV-31)
   createdAt: Date;
   updatedAt: Date;
 }
 ```
 
+**Жизненный цикл лида (фактические переходы):**
+
+```mermaid
+stateDiagram-v2
+    [*] --> QUEUED: POST /leads, импорт из Discovery, POST /audits/trigger
+    QUEUED --> AUDITING: audit worker
+    AUDITING --> AUDITED: аудит завершен
+    AUDITED --> GENERATING: авто-цепочка или «Сгенерировать MVP»
+    GENERATING --> NEEDS_APPROVAL: deploy worker опубликовал превью
+    GENERATING --> AUDITED: сбой первой генерации
+    GENERATING --> NEEDS_APPROVAL: сбой перегенерации (старый MVP цел)
+    NEEDS_APPROVAL --> GENERATING: «Перегенерировать MVP» (forceRegenerate)
+    NEEDS_APPROVAL --> SCHEDULED: HITL-аппрув оператором
+    NEEDS_APPROVAL --> REJECTED: отклонение оператором
+    SCHEDULED --> SENT: email worker
+    SENT --> OPENED: пиксель
+    OPENED --> CLICKED: клик-редирект
+    CLICKED --> ENGAGED: dwell time / CTA в демо
+```
+
+Статусы `PENDING`, `MVP_READY`, `AWAITING_APPROVAL`, `APPROVED`, `DISPATCHED`, `REPLIED`, `UNSUBSCRIBED` остаются в типе `LeadStatus` для совместимости и группируются дашбордом с соседними колонками Kanban, но воркеры их не выставляют.
+
 #### 2. `audits`
 ```typescript
 interface IAudit {
   _id: Types.ObjectId;
-  leadId: Types.ObjectId;
+  leadId: Types.ObjectId;         // повторный аудит создает новый документ; воркер пишет в самый свежий
   status: 'QUEUED' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
-  scores: {
-    total: number;        // 0 - 100
-    design: number;       // 0 - 100
-    accessibility: number;// 0 - 100
-    performance: number;  // 0 - 100
-    standards: number;    // 0 - 100
-  };
-  lighthouseMetrics: {
-    lcp: number;          // ms
-    fidOrInp: number;     // ms
-    cls: number;
-    speedIndex: number;
-  };
+  scores: { total: number; design: number; accessibility: number; performance: number; standards: number }; // 0-100
+  lighthouseMetrics: { lcp: number; fidOrInp?: number; cls: number; speedIndex?: number };
   a11ySummary: {
     violationsCount: number;
     contrastIssuesCount: number;
     missingAltCount: number;
-    criticalViolations: Array<{ id: string; description: string; selector: string }>;
+    criticalViolations: Array<{ id: string; description: string; impact?: string; selector: string }>;
   };
   designCritique: {
     visualHierarchyRating: number;
-    datedDesignFactors: string[];
-    quickWins: string[];
+    mobileFriendlinessRating: number;
     primaryCtaFound: boolean;
+    datedDesignFactors: string[];
+    criticalFlaws: Array<{ title: string; impact: string; recommendation: string }>;
+    quickWins: string[];
   };
   extractedBrandTokens: {
     primaryColor: string;
@@ -423,10 +583,31 @@ interface IAudit {
     logoUrl?: string;
     faviconUrl?: string;
   };
+  extractedServices?: string[];
+  extractedContacts?: {           // REV-23: детерминированно с исходного сайта
+    phone?: string; email?: string; address?: string; workingHours?: string;
+    socialLinks: Array<{ platform: string; url: string }>;
+  };
+  extractedContent?: {            // REV-23: тексты и структура исходного сайта, дословно из DOM
+    language?: string; title?: string; metaDescription?: string; ogImage?: string; h1?: string;
+    headings: string[]; paragraphs: string[];
+    serviceItems: Array<{ title: string; description?: string }>;
+    navItems: string[];
+    testimonials: Array<{ text: string; author?: string }>;
+    images: string[];
+    rating?: { value: number; count?: number };
+    foundingYear?: number;
+  };
   screenshotUrls: {
     desktopOriginal: string;
     mobileOriginal: string;
+    desktopFull?: string;         // REV-21
+    mobileFull?: string;          // REV-21
+    comparisonBanner?: string;
   };
+  cookieBannerHandled?: { desktop?: string; mobile?: string }; // REV-33: dismissed:cmp:<platform> | dismissed:text | ... | not_found | timeout | error
+  generatedContent?: IMvpGeneratedContent; // последние тексты MvpContentAgent
+  aiFallbackUsed?: boolean;
   errorMessage?: string;
   createdAt: Date;
   completedAt?: Date;
@@ -438,43 +619,69 @@ interface IAudit {
 interface IMvpProject {
   _id: Types.ObjectId;
   auditId: Types.ObjectId;
-  leadId: Types.ObjectId;
-  previewSlug: string;           // e.g. "dental-art-38f9"
-  fullPreviewUrl: string;        // https://preview.revamp.io/v/dental-art-38f9
-  storagePath: string;           // s3://revamp-demos/dental-art-38f9/index.html
-  comparisonBannerUrl: string;   // Image with side-by-side comparison
+  leadId: Types.ObjectId;         // один проект на лид; перегенерация обновляет его на месте
+  previewSlug: string;            // e.g. "dental-art-a1b2c3"; не меняется при перегенерации
+  fullPreviewUrl: string;         // <S3_ENDPOINT>/revamp-demos/v/<slug>/index.html
+  storageHtmlPath: string;        // v/<slug>/index.html
+  comparisonBannerUrl?: string;   // banners/<slug>.webp, 1200x630
   generatedContent: {
-    headline: string;
-    subheadline: string;
-    services: Array<{ title: string; description: string; icon: string }>;
-    enhancedOffer: string;
+    hero: { badge: string; headline: string; subheadline: string; primaryCtaText: string; secondaryCtaText: string };
+    about?: { heading: string; body: string };
+    servicesHeading?: string;
+    services: Array<{ title: string; description: string; lucideIconName: string }>;
+    trustSignals: Array<{ metric: string; label: string }>;
+    offerNotice: string;
   };
-  customizedCssTokens: {
-    primaryColor: string;
-    accentColor: string;
-    fontFamily: string;
-  };
+  colorPalette: { primary: string; secondary: string; accent: string };
   isPublished: boolean;
+  generatedAt?: Date;             // REV-31
+  generationCount?: number;       // REV-31
+  completenessReport?: {          // REV-36/37
+    status: 'verified' | 'unverified';
+    score?: number;               // 0-100, веса critical 3 / important 2 / informational 1
+    hasCriticalIssues: boolean;
+    checks: Array<{
+      field: CompletenessField; tier: 'critical' | 'important' | 'informational';
+      status: 'present' | 'missing' | 'altered' | 'not_in_source' | 'unsourced';
+      originalValue?: string; mvpValue?: string; note?: string; judgedBy?: 'llm' | 'code';
+    }>;
+    method?: 'llm' | 'deterministic';
+    model?: string;
+    llmError?: string;
+    error?: string;
+    checkedAt: Date;
+  };
+  provider?: 'anthropic' | 'openai' | 'gemini' | 'claude-cli' | 'mock' | 'deterministic'; // REV-32
+  modelUsed?: string;
+  requestedProvider?: 'anthropic' | 'openai' | 'gemini' | 'claude-cli' | 'mock';
+  requestedModel?: string;
   createdAt: Date;
+  updatedAt: Date;
 }
 ```
 
-#### 4. `email_campaigns` & `email_logs`
+#### 4. `email_campaigns` & `analytics_events`
 ```typescript
 interface IEmailCampaign {
   _id: Types.ObjectId;
   leadId: Types.ObjectId;
   auditId: Types.ObjectId;
   mvpProjectId: Types.ObjectId;
-  status: 'DRAFT' | 'NEEDS_APPROVAL' | 'APPROVED' | 'SENDING' | 'DELIVERED' | 'BOUNCED' | 'REJECTED';
+  status: 'DRAFT' | 'NEEDS_APPROVAL' | 'APPROVED' | 'SCHEDULED' | 'SENDING' | 'DELIVERED' | 'BOUNCED' | 'REJECTED';
   senderEmail: string;
   recipientEmail: string;
   subject: string;
+  previewText?: string;
   bodyHtml: string;
+  bodyPlainText?: string;
   trackingToken: string;
   requiresManualReview: boolean;
-  approvedBy?: Types.ObjectId;
+  approvedBy?: string;
+  approvedAt?: Date;
+  scheduledAt?: Date;
   sentAt?: Date;
+  bouncedAt?: Date;
+  bounceReason?: string;
   metrics: {
     openedAt?: Date;
     openCount: number;
@@ -484,97 +691,142 @@ interface IEmailCampaign {
     totalDwellTimeSeconds: number;
   };
 }
+
+interface IAnalyticsEvent {
+  leadId?: Types.ObjectId;
+  campaignId?: Types.ObjectId;
+  mvpProjectId?: Types.ObjectId;
+  trackingToken?: string;
+  eventType: 'open' | 'click' | 'pageview' | 'dwell_time' | 'cta_click' | 'booking_intent' | 'scroll_depth' | 'token_usage';
+  dwellTimeSeconds?: number;
+  scrollDepthPercent?: number;
+  ipHash?: string;
+  userAgent?: string;
+  metadata?: Record<string, unknown>;
+  timestamp: Date;
+}
 ```
 
 ---
 
 ## 5. Спецификация REST API (Express.js)
 
-Базовый путь: `/api/v1`
+Базовый путь: `/api/v1`. Тела запросов и query-параметры валидируются Zod-схемами из `@revamp/validation` (`validateBody` / `validateQuery`). Ответы: `{ success: true, data }` или `{ success: false, error: { code, message } }`. Эндпоинты с пометкой *(план)* описаны в первоначальном дизайне, но еще не реализованы.
 
 ### 5.1. Управление лидами и аудитами (`/leads`, `/audits`)
 | Метод | Эндпоинт | Описание | Body / Параметры |
 |---|---|---|---|
-| `POST` | `/leads` | Создать лид и запустить аудит | `{ businessName, originalUrl, contactEmail, niche, city }` |
-| `GET` | `/leads` | Список лидов с пагинацией и фильтрами | `?status=AWAITING_APPROVAL&niche=auto&page=1&limit=20` |
+| `POST` | `/leads` | Создать лид (`QUEUED`) и поставить аудит в очередь | `CreateLeadSchema`: `{ businessName, originalUrl, contactEmail, niche, city?, contactPhone?, ownerName? }` |
+| `GET` | `/leads` | Список лидов с фильтрами; каждый лид несет краткую сводку полноты MVP (`completeness`) | `?status=&niche=&search=&page=&limit=` |
 | `GET` | `/leads/:id` | Детальная карточка лида + связанный аудит | — |
-| `POST` | `/audits/trigger` | Принудительный перезапуск аудита | `{ leadId }` |
+| `POST` | `/audits/trigger` | Принудительный перезапуск аудита (новый документ `Audit`) | `{ leadId }` |
 | `GET` | `/audits/:id` | Результаты аудита, метрики, ссылки на скриншоты | — |
 
 ### 5.2. Модуль генерации MVP (`/mvp`)
 | Метод | Эндпоинт | Описание | Body / Параметры |
 |---|---|---|---|
-| `POST` | `/mvp/generate` | Запуск генерации MVP на базе завершенного аудита | `{ auditId, forceRegenerate: boolean }` |
-| `GET` | `/mvp/:id` | Получение конфигурации и ссылки на демо | — |
-| `PATCH` | `/mvp/:id/tokens` | Ручная коррекция палитры/текстов оператором | `{ primaryColor, headline, services }` |
-| `POST` | `/mvp/:id/rebuild` | Пересборка статики после правок оператора | — |
+| `GET` | `/mvp/providers` | LLM-провайдеры и модели для генерации и доступность каждого по последнему отчету воркеров (REV-32) | — |
+| `POST` | `/mvp/generate` | Запуск генерации/перегенерации MVP → `202 { jobId, status: 'GENERATING' }` | `GenerateMvpSchema`: `{ auditId, forceRegenerate?, provider?, model? }` |
+| `GET` | `/mvp/:id` | Проект MVP по `_id`, `leadId`, `auditId` или `previewSlug` (с отчетом полноты) | — |
+| `GET` | `/mvp/preview/:slug` | Редирект на опубликованное превью с заголовками CSP / `X-Frame-Options` | — |
+| `PATCH` | `/mvp/:id/tokens` | Ручная коррекция палитры оператором | `UpdateMvpTokensSchema`: `{ primaryColor?, secondaryColor?, accentColor?, headline?, subheadline?, services? }` (сейчас сохраняется только палитра) |
+| `POST` | `/mvp/:id/rebuild` | *(план)* Пересборка статики после правок оператора | — |
+
+Коды ошибок `POST /mvp/generate`: `400` ошибка валидации (неизвестный провайдер или модель другого провайдера), `400 LLM_PROVIDER_NOT_ALLOWED` (dev-only провайдер `mock` в production), `404` (нет аудита/лида), `409 MVP_ALREADY_GENERATED` (MVP есть, а `forceRegenerate` не задан), `409 MVP_GENERATION_NOT_ALLOWED` (письмо уже в отправке или идет генерация).
 
 ### 5.3. Модуль аутрича и подтверждения (HITL) (`/outreach`)
 | Метод | Эндпоинт | Описание | Body / Параметры |
 |---|---|---|---|
-| `GET` | `/outreach/pending` | Список писем, ожидающих ручного подтверждения | `?page=1&limit=15` |
-| `PUT` | `/outreach/:id/draft` | Обновление текста письма оператором | `{ subject, bodyHtml }` |
-| `POST` | `/outreach/:id/approve`| **[HITL Action]** Одобрить и поставить в очередь отправки | `{ scheduleTime?: Date }` |
-| `POST` | `/outreach/:id/reject` | Отклонить отправку (невалидный лид/дубль) | `{ reason: string }` |
-| `POST` | `/outreach/:id/test`   | Отправить тестовое письмо на почту оператора | `{ testEmail: string }` |
+| `GET` | `/outreach/pending` | Лиды, ожидающие ручного подтверждения (`NEEDS_APPROVAL`) | — |
+| `POST` | `/outreach/:id/approve`| **[HITL Action]** Одобрить: лид → `SCHEDULED`, письмо в `email-queue` с джиттером | `{ subject?, body?, preheader?, approvedBy?, scheduleTime? }` |
+| `POST` | `/outreach/:id/reject` | Отклонить отправку (лид → `REJECTED`) | `{ reason: string }` |
+| `POST` | `/outreach/:id/test`   | Тестовое письмо на почту оператора | `{ testEmail: string }` |
+| `PUT` | `/outreach/:id/draft` | *(план)* Сохранение черновика без отправки | `{ subject, bodyHtml }` |
 
-### 5.4. Трекинг активности и аналитика (`/track`, `/analytics`)
+### 5.4. Поиск локальных бизнесов (`/discovery`) — REV-26…REV-29
+| Метод | Эндпоинт | Описание | Body / Параметры |
+|---|---|---|---|
+| `POST` | `/discovery` | Поставить поиск в `discovery-queue` → `202 { jobId }` | `StartDiscoverySchema`: `{ provider: 'osm'\|'google', niche, location, keyword?, limit (1-100, по умолч. 20) }` |
+| `GET` | `/discovery/reverse-geocode` | Координаты браузера → `"City, Country"` через Nominatim (уровень города); `404` если не найдено, `502` при сбое Nominatim | `?lat&lng&lang` |
+| `GET` | `/discovery/:jobId` | Состояние задачи (`waiting`/`active`/`completed`/`failed`/…), параметры, кандидаты; `new`-кандидаты перепроверяются по текущим лидам | — |
+| `POST` | `/discovery/:jobId/import` | Импорт выбранных кандидатов как лидов; данные берутся только из результата задачи; `404` неизвестная задача, `409` задача не завершена | `ImportDiscoverySchema`: `{ externalIds: string[] (1-100) }` |
+
+### 5.5. Трекинг активности и аналитика (`/track`, `/health`)
 | Метод | Эндпоинт | Описание |
 |---|---|---|
-| `GET` | `/track/open/:token.gif` | 1x1 прозрачный пиксель отслеживания открытия письма |
-| `GET` | `/track/click/:token` | Редирект на демо-сайт с логированием клика |
-| `POST` | `/track/mvp-event` | Beacon API эндпоинт: логирование времени на странице и кликов в демо |
-| `GET` | `/analytics/overview` | Метрики воронки, open rate, CTR, средний скоринг |
+| `GET` | `/track/open/:token.gif` | 1x1 прозрачный пиксель отслеживания открытия письма (лид → `OPENED`) |
+| `GET` | `/track/click/:token` | Редирект на демо-сайт с логированием клика (лид → `CLICKED`) |
+| `POST` | `/track/mvp-event` | Beacon API: время на странице, скролл, клики в демо (лид → `ENGAGED`) |
+| `GET` | `/track/revamp-tracker.js` | Скрипт трекинга для страниц MVP |
+| `GET` | `/health` | Проверка доступности API, MongoDB и Redis |
+| `GET` | `/analytics/overview` | *(план)* Метрики воронки, open rate, CTR, средний скоринг |
 
 ---
 
 ## 6. Архитектура очередей задач (BullMQ & Redis)
 
-Для изоляции нагрузки и предотвращения утечек памяти Puppeteer/Playwright задачи разделены по специализированным очередям с индивидуальными лимитами конкурентности.
+Для изоляции нагрузки и предотвращения утечек памяти Playwright задачи разделены по специализированным очередям с индивидуальными лимитами конкурентности. Имена очередей — `QUEUE_NAMES` в `apps/api/src/queues/queue.constants.ts` и `apps/workers/src/queues/queue.constants.ts`.
 
 ```mermaid
 graph LR
     subgraph Producers
-        API_Post[POST /leads]
-        API_Approve[POST /outreach/approve]
+        API_Disc[POST /discovery]
+        API_Import[POST /discovery/:jobId/import]
+        API_Post[POST /leads, POST /audits/trigger]
+        API_Gen[POST /mvp/generate]
+        API_Approve[POST /outreach/:id/approve]
     end
 
     subgraph Redis_Queues [Redis / BullMQ Queues]
-        Q_Audit[(Queue: audit-jobs)]
-        Q_AI[(Queue: ai-generation)]
-        Q_Deploy[(Queue: mvp-deploy)]
-        Q_Mail[(Queue: email-dispatch)]
+        Q_Disc[(discovery-queue)]
+        Q_Audit[(audit-queue)]
+        Q_AI[(ai-gen-queue)]
+        Q_Deploy[(deploy-queue)]
+        Q_Mail[(email-queue)]
     end
 
-    subgraph Workers_Pool [Dedicated Node.js Workers]
-        W1[Audit Worker x3<br/>Concurrency: 2]
-        W2[LLM Worker x5<br/>Rate-limited]
-        W3[Deployer Worker x2<br/>Concurrency: 5]
-        W4[Email Dispatcher x1<br/>Throttled: 20/hr]
+    subgraph Workers_Pool [Node.js Workers]
+        W0[Discovery Worker<br/>Concurrency: 1]
+        W1[Audit Worker<br/>Concurrency: 2]
+        W2[AI Worker<br/>Concurrency: 5]
+        W3[Deploy Worker<br/>Concurrency: 5]
+        W4[Email Dispatcher<br/>Concurrency: 1, 1 письмо / 180 с]
     end
 
+    API_Disc --> Q_Disc --> W0
+    W0 -.->|Кандидаты в результате задачи| API_Import
+    API_Import --> Q_Audit
     API_Post --> Q_Audit
     Q_Audit --> W1
-    W1 --> Q_AI
+    W1 -->|Авто-цепочка| Q_AI
+    API_Gen --> Q_AI
     Q_AI --> W2
     W2 --> Q_Deploy
     Q_Deploy --> W3
-    W3 -.->|Создает Draft в Дашборде| HITL[Human In The Loop Approval]
+    W3 -.->|NEEDS_APPROVAL| HITL[Human In The Loop Approval]
     HITL --> API_Approve
     API_Approve --> Q_Mail
     Q_Mail --> W4
 ```
 
 ### Настройки воркеров:
-1. **`audit-jobs` Worker:**
-   * Concurrency: `2` на одно ядро CPU (Playwright ресурсоемок).
-   * Sandbox: Каждый запуск в инкогнито-контексте с принудительным завершением процесса через 60 сек (таймаут).
-2. **`ai-generation` Worker:**
-   * Rate-Limiter: Ограничение запросов к OpenAI / Anthropic API (Token Bucket).
-   * Retry Strategy: Экспоненциальный откат (Exponential Backoff, 3 попытки).
-3. **`email-dispatch` Worker:**
-   * Throttling: Строго 1 письмо в 3 минуты на активный SMTP-аккаунт.
-   * Jitter: Случайная задержка 15–45 секунд между письмами для симуляции человеческой активности.
+1. **`discovery-queue` Worker:**
+   * Concurrency: `1` (правила добросовестного использования Nominatim/Overpass).
+   * Ретраи: 2 попытки с экспоненциальным откатом от 10 с; ошибки конфигурации завершаются `UnrecoverableError` без повтора.
+2. **`audit-queue` Worker:**
+   * Concurrency: `2` (Playwright ресурсоемок).
+   * Sandbox: каждый запуск в отдельном контексте браузера, таймаут навигации 25 с, перезапуск браузера каждые 20 задач.
+   * По завершении ставит задачу в `ai-gen-queue`. При старте воркеров лиды, застрявшие в `AUDITED` с завершенным аудитом, ставятся в очередь повторно (`recoverStalledAuditedLeads`).
+3. **`ai-gen-queue` Worker:**
+   * Concurrency: `5`. Ретраи: 3 попытки, экспоненциальный откат от 5 с; внутри задачи — до 3 обращений к LLM (температура 0.3 → 0.0 → 0.0), затем детерминированный fallback.
+   * Payload несет `forceRegenerate`, `previousStatus` и выбор оператора (`provider`, `model`).
+4. **`deploy-queue` Worker:**
+   * Concurrency: `5`. Ретраи: 3 попытки, экспоненциальный откат от 5 с.
+   * Рендер Bento, проверка полноты, выгрузка в `revamp-demos`, баннер «До/После», `Lead.status = NEEDS_APPROVAL`.
+   * Обработчик `failed` (общий с AI-воркером, `generation-failure.ts`) после последнего ретрая возвращает лид из `GENERATING` и пишет `generationError`.
+5. **`email-queue` Worker:**
+   * Throttling: строго 1 письмо в 3 минуты (BullMQ limiter `max: 1, duration: 180000`).
+   * Jitter: случайная задержка 15–45 секунд, рассчитываемая API при постановке задачи.
 
 ---
 
@@ -592,6 +844,13 @@ graph LR
      - `Admin`: настройка SMTP, API-ключей, управление пользователями.
      - `Operator / Reviewer`: просмотр лидов, правка писем, ручной аппрув отправки.
      - `Viewer`: просмотр аналитики без права отправки.
+   * *Статус:* аутентификация и RBAC пока не реализованы; дашборд и API рассчитаны на одного оператора в закрытом окружении.
+4. **Внешние источники данных и LLM (REV-26…REV-37):**
+   * **Discovery:** запросы к Nominatim/Overpass идут с идентифицирующим `User-Agent` и конкурентностью 1; Google Maps не парсится, используется только официальный Places API. Импорт берет данные кандидатов только из сохраненного результата задачи, а не из тела запроса, поэтому клиент не может подменить сайт или контакты.
+   * **Геолокация оператора:** обратное геокодирование проксируется через API и ограничено уровнем города, чтобы не возвращать улицу оператора.
+   * **Локальный Claude Code CLI:** запуск в одноходовом headless-режиме без инструментов, MCP-серверов и пользовательских/проектных настроек, во временной рабочей папке (чтобы CLI не подхватил `CLAUDE.md`/`AGENTS.md` репозитория), с таймаутом `CLAUDE_CLI_TIMEOUT_MS`.
+   * **Провайдеры LLM:** выбор оператора не переключает задачу на другой платный провайдер при сбое — только на детерминированный fallback. Dev-only провайдер `mock` отклоняется в production.
+   * **Grounding:** LLM никогда не выводит телефоны, e-mail и адреса; проверка полноты помечает выдуманные контакты как `unsourced`, а одобрение лида с критическими проблемами требует дополнительного подтверждения оператора.
 
 ---
 
@@ -642,3 +901,11 @@ gantt
 * Очередь отправки писем с защитой доменов (BullMQ + Nodemailer / Resend).
 * Сервер отслеживания кликов, открытий и времени нахождения на демо-сайте.
 * Экран аналитики конверсий и интеграционное тестирование всего цикла.
+
+### Фаза 5: Развитие после релиза (REV-21 — REV-41)
+После закрытия первоначальной дорожной карты (REV-1 — REV-20) работа продолжается отдельными тикетами в Linear по конвейеру «тикет → код → тесты → PR → merge». Состав и статусы — в [milestones.md](./milestones.md#6-развитие-после-релиза-rev-21--rev-41):
+* Качество аудита: полностраничные скриншоты (REV-21), закрытие cookie-баннеров (REV-33).
+* Качество MVP: контент исходного сайта вместо шаблонов (REV-23), язык исходного сайта (REV-25), лимиты полей (REV-34), проверка полноты кодом и LLM (REV-36, REV-37).
+* Генерация: локальный Claude Code CLI (REV-30), перегенерация (REV-31), выбор провайдера и модели (REV-32).
+* Лидогенерация: поиск бизнесов на картах (REV-26 — REV-29), фильтрация уже существующих лидов (REV-35, в работе).
+* Дашборд: английский интерфейс (REV-22) и локализация en/ru/be/pl/lt (REV-24).
