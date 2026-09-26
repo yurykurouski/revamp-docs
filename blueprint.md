@@ -397,7 +397,7 @@ sequenceDiagram
    * Кнопка «Перегенерировать MVP» с подтверждением и выбором провайдера/модели (REV-31, REV-32).
    * Если критическое поле MVP отсутствует, изменено или выдумано, одобрение требует дополнительного подтверждения (REV-36).
    * Большая акцентная кнопка «Подтвердить и отправить» (`Ctrl/Cmd + Enter`).
-4. **Карточки Kanban:** кнопки «Сгенерировать MVP» (для `AUDITED`) и «Перегенерировать MVP» (для `NEEDS_APPROVAL`, `MVP_READY`, `AWAITING_APPROVAL`, `APPROVED`), чип «Пробелы в данных» при критических проблемах полноты, текст последней ошибки генерации (`generationError`).
+4. **Карточки Kanban:** кнопки «Сгенерировать MVP» (для `AUDITED`) и «Перегенерировать MVP» (для `NEEDS_APPROVAL`, `MVP_READY`, `AWAITING_APPROVAL`, `APPROVED`), чип «Пробелы в данных» при критических проблемах полноты, текст последней ошибки генерации (`generationError`). Для `AUDIT_FAILED`: чип «Аудит не удался» с причиной, кнопки «Повторить аудит» и «Отклонить» (REV-44).
 5. **Поиск бизнесов (`DiscoveryModal` + `DiscoveryReview`, REV-27…REV-29):** кнопка в хедере открывает форму (провайдер, ниша, локация с автоопределением, ключевое слово, лимит). После отправки модалка опрашивает задачу; ее можно свернуть кнопкой «Выполнять в фоне». По завершении показывается таблица кандидатов с предвыбранными новыми бизнесами, переключателем «Показать пропущенные» и итогом импорта.
 6. **Аналитический дашборд:**
    * Конверсионная воронка (Аудиты -> Отправлено -> Открыто -> Переходов на MVP -> Ответы).
@@ -435,6 +435,7 @@ erDiagram
         string comparisonBannerUrl
         Date mvpGeneratedAt
         string generationError
+        string auditError
     }
 
     Audit {
@@ -526,6 +527,7 @@ interface ILead {
   comparisonBannerUrl?: string;
   mvpGeneratedAt?: Date;          // сброс кэша превью после перегенерации (REV-31)
   generationError?: string;       // причина последнего сбоя генерации (REV-31)
+  auditError?: string;            // причина окончательного сбоя аудита, одна строка (REV-44)
   createdAt: Date;
   updatedAt: Date;
 }
@@ -538,6 +540,9 @@ stateDiagram-v2
     [*] --> QUEUED: POST /leads, импорт из Discovery, POST /audits/trigger
     QUEUED --> AUDITING: audit worker
     AUDITING --> AUDITED: аудит завершен
+    AUDITING --> AUDIT_FAILED: последняя попытка или постоянная ошибка (DNS, сертификат)
+    AUDIT_FAILED --> QUEUED: «Повторить аудит» (POST /audits/trigger)
+    AUDIT_FAILED --> REJECTED: отклонение оператором
     AUDITED --> GENERATING: авто-цепочка или «Сгенерировать MVP»
     GENERATING --> NEEDS_APPROVAL: deploy worker опубликовал превью
     GENERATING --> AUDITED: сбой первой генерации
@@ -817,6 +822,7 @@ graph LR
 2. **`audit-queue` Worker:**
    * Concurrency: `2` (Playwright ресурсоемок).
    * Sandbox: каждый запуск в отдельном контексте браузера, таймаут навигации 25 с, перезапуск браузера каждые 20 задач.
+   * Ретраи: 3 попытки, экспоненциальный откат от 3 с. Постоянные ошибки навигации (`ERR_NAME_NOT_RESOLVED`, `ERR_CERT_*`, `ERR_INVALID_URL`) завершаются `UnrecoverableError` без повтора. После последней попытки лид переходит из `AUDITING` в `AUDIT_FAILED` с причиной в `auditError` (`audit-failure.ts`, REV-44). Лиды, застрявшие до исправления, переводятся скриптом `backfill:stuck-audits`.
    * По завершении ставит задачу в `ai-gen-queue`. При старте воркеров лиды, застрявшие в `AUDITED` с завершенным аудитом, ставятся в очередь повторно (`recoverStalledAuditedLeads`).
 3. **`ai-gen-queue` Worker:**
    * Concurrency: `5`. Ретраи: 3 попытки, экспоненциальный откат от 5 с; внутри задачи — до 3 обращений к LLM (температура 0.3 → 0.0 → 0.0), затем детерминированный fallback.
