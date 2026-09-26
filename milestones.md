@@ -204,7 +204,7 @@ gantt
 | [**REV-37**](https://linear.app/revamp-proect/issue/REV-37) | Сравнение MVP с исходным сайтом через LLM с проверкой цитат кодом | MVP / LLM | ✅ Done |
 | [**REV-38**](https://linear.app/revamp-proect/issue/REV-38) | Оценка сложности сайта на аудите и приоритет одностраничных сайтов-визиток | Аудит | ✅ Done |
 | [**REV-39**](https://linear.app/revamp-proect/issue/REV-39) | Удалить неработающие пункты навигации в сайдбаре дашборда | Дашборд | ✅ Done |
-| [**REV-40**](https://linear.app/revamp-proect/issue/REV-40) | Индикатор прогресса поиска бизнесов в фоне | Discovery | ⏳ Backlog |
+| [**REV-40**](https://linear.app/revamp-proect/issue/REV-40) | Индикатор прогресса поиска бизнесов в фоне | Discovery | ✅ Done |
 | [**REV-41**](https://linear.app/revamp-proect/issue/REV-41) | Автоматически открывать результаты поиска бизнесов, завершенного в фоне | Discovery | ⏳ Backlog |
 | [**REV-44**](https://linear.app/revamp-proect/issue/REV-44) | Лиды застревают в `AUDITING` после неудачного аудита | Аудит | ✅ Done |
 | [**REV-46**](https://linear.app/revamp-proect/issue/REV-46) | Сворачиваемое боковое меню дашборда (в свернутом виде — только иконки) | Дашборд | ✅ Done |
