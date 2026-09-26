@@ -199,14 +199,15 @@ gantt
 | [**REV-32**](https://linear.app/revamp-proect/issue/REV-32) | Выбор LLM-провайдера и модели для генерации MVP | MVP / LLM | ✅ Done |
 | [**REV-33**](https://linear.app/revamp-proect/issue/REV-33) | Закрытие cookie-баннеров перед скриншотами аудита | Аудит | ✅ Done |
 | [**REV-34**](https://linear.app/revamp-proect/issue/REV-34) | Fallback при слишком длинном поле в ответе LLM | MVP / LLM | ✅ Done |
-| [**REV-35**](https://linear.app/revamp-proect/issue/REV-35) | Не предлагать при поиске бизнесы, которые уже есть в лидах | Discovery | 🔄 In Progress |
+| [**REV-35**](https://linear.app/revamp-proect/issue/REV-35) | Не предлагать при поиске бизнесы, которые уже есть в лидах | Discovery | ✅ Done |
 | [**REV-36**](https://linear.app/revamp-proect/issue/REV-36) | Проверка MVP на потерю ключевых данных исходного сайта | MVP | ✅ Done |
 | [**REV-37**](https://linear.app/revamp-proect/issue/REV-37) | Сравнение MVP с исходным сайтом через LLM с проверкой цитат кодом | MVP / LLM | ✅ Done |
-| [**REV-38**](https://linear.app/revamp-proect/issue/REV-38) | Оценка сложности сайта на аудите и приоритет одностраничных сайтов-визиток | Аудит | ⏳ Backlog |
-| [**REV-39**](https://linear.app/revamp-proect/issue/REV-39) | Удалить неработающие пункты навигации в сайдбаре дашборда | Дашборд | ⏳ Backlog |
+| [**REV-38**](https://linear.app/revamp-proect/issue/REV-38) | Оценка сложности сайта на аудите и приоритет одностраничных сайтов-визиток | Аудит | ✅ Done |
+| [**REV-39**](https://linear.app/revamp-proect/issue/REV-39) | Удалить неработающие пункты навигации в сайдбаре дашборда | Дашборд | ✅ Done |
 | [**REV-40**](https://linear.app/revamp-proect/issue/REV-40) | Индикатор прогресса поиска бизнесов в фоне | Discovery | ⏳ Backlog |
 | [**REV-41**](https://linear.app/revamp-proect/issue/REV-41) | Автоматически открывать результаты поиска бизнесов, завершенного в фоне | Discovery | ⏳ Backlog |
 | [**REV-44**](https://linear.app/revamp-proect/issue/REV-44) | Лиды застревают в `AUDITING` после неудачного аудита | Аудит | ✅ Done |
+| [**REV-46**](https://linear.app/revamp-proect/issue/REV-46) | Сворачиваемое боковое меню дашборда (в свернутом виде — только иконки) | Дашборд | ✅ Done |
 
 ### Definition of Done для тикетов после релиза
 - [ ] Тикет в команде REV с разделами `Problem`, `Expected`, `Acceptance criteria` и меткой `Bug` / `Feature`.
