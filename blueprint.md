@@ -717,7 +717,8 @@ interface IAnalyticsEvent {
 | Метод | Эндпоинт | Описание | Body / Параметры |
 |---|---|---|---|
 | `POST` | `/leads` | Создать лид (`QUEUED`) и поставить аудит в очередь | `CreateLeadSchema`: `{ businessName, originalUrl, contactEmail, niche, city?, contactPhone?, ownerName? }` |
-| `GET` | `/leads` | Список лидов с фильтрами; каждый лид несет краткую сводку полноты MVP (`completeness`) | `?status=&niche=&search=&page=&limit=` |
+| `GET` | `/leads` | Список лидов с фильтрами и пагинацией (`pagination.total`); каждый лид несет краткую сводку полноты MVP (`completeness`). `search` ищет подстроку без учета регистра (спецсимволы экранируются). Дашборд загружает все страницы по `limit=100` (REV-43) | `?status=&niche=&complexity=&search=&page=&limit=` (`limit` ≤ 100, по умолчанию 20) |
+| `GET` | `/leads/stats` | Счетчики по всей воронке без учета фильтров списка → `{ total, byStatus }` (`ILeadStats`); источник KPI-карточек дашборда (REV-43) | — |
 | `GET` | `/leads/:id` | Детальная карточка лида + связанный аудит | — |
 | `POST` | `/audits/trigger` | Принудительный перезапуск аудита (новый документ `Audit`) | `{ leadId }` |
 | `GET` | `/audits/:id` | Результаты аудита, метрики, ссылки на скриншоты | — |
