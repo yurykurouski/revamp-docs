@@ -209,6 +209,10 @@ gantt
 | [**REV-44**](https://linear.app/revamp-proect/issue/REV-44) | Лиды застревают в `AUDITING` после неудачного аудита | Аудит | ✅ Done |
 | [**REV-45**](https://linear.app/revamp-proect/issue/REV-45) | Убрать mock-данные и mock-провайдеры из рабочего кода: ошибки и пустые состояния вместо выдуманных данных | Платформа | ✅ Done |
 | [**REV-46**](https://linear.app/revamp-proect/issue/REV-46) | Сворачиваемое боковое меню дашборда (в свернутом виде — только иконки) | Дашборд | ✅ Done |
+| [**REV-51**](https://linear.app/revamp-proect/issue/REV-51) | Vision-критика дизайна через локальный Claude Code CLI | Аудит / LLM | ✅ Done |
+| [**REV-52**](https://linear.app/revamp-proect/issue/REV-52) | Трекер MVP загружается с API, а не с хоста хранилища; CORS для `/track/*` | Телеметрия | ✅ Done |
+| [**REV-53**](https://linear.app/revamp-proect/issue/REV-53) | Анимированный ИИ-оверлей на превью MVP во время перегенерации | Дашборд | ✅ Done |
+| [**REV-55**](https://linear.app/revamp-proect/issue/REV-55) | MVP строится по текущему завершенному аудиту лида, а не по устаревшему | MVP | ✅ Done |
 
 ### Definition of Done для тикетов после релиза
 - [ ] Тикет в команде REV с разделами `Problem`, `Expected`, `Acceptance criteria` и меткой `Bug` / `Feature`.
