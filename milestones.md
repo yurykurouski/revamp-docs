@@ -97,7 +97,7 @@ flowchart LR
 
 #### План по дням:
 * **День 15–16 (Интерфейс воронки на MUI v6):**
-  - Темизация Material UI (шрифт Inter, скругления 12px, акцентная палитра, Dark/Light mode).
+  - Темизация Material UI (шрифт Inter, акцентная палитра, Dark/Light mode); в REV-49 переработана в стиле Hyperliquid (скругления 4–10 px, рамки 1px, мятный акцент).
   - Экран лидов: переключение между Kanban-доской (`Queued -> Needs Review -> Sent -> Viewed`) и таблицей `@mui/x-data-grid`.
   - Форма быстрого добавления нового сайта на аудит.
 * **День 17–18 (Side-by-Side инспектор):**
@@ -214,6 +214,7 @@ gantt
 | [**REV-53**](https://linear.app/revamp-proect/issue/REV-53) | Анимированный ИИ-оверлей на превью MVP во время перегенерации | Дашборд | ✅ Done |
 | [**REV-55**](https://linear.app/revamp-proect/issue/REV-55) | MVP строится по текущему завершенному аудиту лида, а не по устаревшему | MVP | ✅ Done |
 | [**REV-48**](https://linear.app/revamp-proect/issue/REV-48) | Архитектурный обзор монорепозитория ([`architecture-review.md`](./architecture-review.md)); общие модели Mongoose в `@revamp/db`; тикеты REV-59…REV-70 по находкам | Платформа | ✅ Done |
+| [**REV-49**](https://linear.app/revamp-proect/issue/REV-49) | Редизайн дашборда в стиле Hyperliquid: токены темы для тёмного/светлого режима, плоские компактные компоненты, контраст WCAG AA | Дашборд | ✅ Done |
 
 ### Definition of Done для тикетов после релиза
 - [ ] Тикет в команде REV с разделами `Problem`, `Expected`, `Acceptance criteria` и меткой `Bug` / `Feature`.
