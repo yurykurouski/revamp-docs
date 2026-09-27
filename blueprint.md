@@ -275,8 +275,9 @@ flowchart TD
 
    * **Только реальные данные (REV-23):** шаблон не содержит выдуманных значений по умолчанию. Кнопка звонка, полоса доверия, отзывы, часы работы и контакты отображаются только при наличии извлеченных данных. Добавлены секции «О нас», hero-изображение, галерея и соцсети; адрес ведет на Google Maps. Бледный основной цвет заменяется читаемым фирменным или затемняется до контраста 3:1.
    * **Язык сайта (REV-25):** `<html lang>` получает BCP 47-тег исходного сайта, фиксированный UI-текст шаблона (подписи секций, форма, футер) и детерминированный fallback локализованы для en, ru, be, pl, lt (для прочих языков — английский UI при корректном `lang`).
-   * **Варианты макета (REV-54):** вместо одной Bento-структуры шаблон рендерит один из четырех макетов (`MVP_LAYOUT_VARIANTS`): `bento` (исходный, по умолчанию и для старых MVP), `split` (hero из текста и фото, галерея сразу после hero, услуги плитками), `editorial` (типографический, заголовки с засечками, сначала «О нас», услуги нумерованным списком) и `compact` (короткая визитка: темный hero с проверенными контактами рядом с заголовком, компактные плитки услуг). Все макеты выводят одни и те же проверенные данные; меняются только разметка, CSS (в бандл встраивается CSS только выбранного макета) и порядок секций.
+   * **Варианты макета (REV-54):** вместо одной Bento-структуры шаблон рендерит один из четырех макетов (`MVP_LAYOUT_VARIANTS`): `bento` (исходный, по умолчанию и для старых MVP), `split` (hero из текста и фото, галерея сразу после hero, услуги плитками), `editorial` (типографический, заголовки с засечками, сначала «О нас», услуги нумерованным списком) и `compact` (короткая визитка: темный hero с проверенными контактами рядом с заголовком, компактные плитки услуг). Все макеты выводят одни и те же проверенные данные; меняются только разметка, CSS и порядок секций. Применяется CSS только выбранного макета (`<style id="revamp-layout-css">`); CSS, hero и блок услуг остальных макетов лежат в инертных `<template data-revamp-layout="…">` для живого переключения (REV-84). Порядок секций задает `LAYOUT_SECTION_ORDER`.
    * **Выбор макета** детерминирован (`layout-selection.service.ts`, без LLM) и делается в `deploy-queue` по данным аудита: сайт с ≤2 услугами или одностраничная визитка с ≤4 услугами → `compact`; визуальные ниши (`restaurant`, `beauty`, `fitness`, `construction`, `auto`) с hero-фото и ≥2 изображениями → `split`; экспертные ниши (`legal`, `medical`, `dental`) с ≥6 абзацами текста → `editorial`; прочие сайты с hero-фото и ≥6 изображениями → `split`; блок «О нас», ≥8 абзацев и <4 изображений → `editorial`; иначе `bento`. Результат валидируется `MvpLayoutSelectionSchema` и сохраняется в `MvpProject.layout` (`variant` + коды причин, например `rule:visual_niche`, `images:8`); перегенерация по тому же аудиту дает тот же макет. Дашборд показывает макет чипом в инспекторе.
+   * **Ручная смена макета (REV-84):** на шаге «Прототип» оператор выбирает любой из четырех макетов. Дашборд отправляет в песочницу `postMessage({ type: 'REVAMP_SET_LAYOUT', layout, animate })`; скрипт страницы подставляет CSS, hero и блок услуг из `<template>`, переставляет секции и анимирует переход через View Transitions (секции и hero плавно переезжают, старый и новый вид перетекают с легким размытием; без View Transitions — затухание через Web Animations; при `prefers-reduced-motion` — мгновенно). iframe не перезагружается. Выбор сохраняется `PATCH /mvp/:id/layout` в `MvpProject.layout` с причиной `rule:manual` (факты аудита сохраняются), после чего `deploy-queue` перерисовывает опубликованный бандл (`mode: 'relayout'`). LLM не вызывается.
    * **Иконка страницы (REV-56):** каждый макет объявляет `<link rel="icon">` в `<head>`: URL логотипа сайта, если он известен, иначе монограмма (извлеченная или сгенерированная из инициалов) как `data:image/svg+xml` URI. Поэтому MVP, открытый во вкладке, не запрашивает `/favicon.ico` с корня хранилища (MinIO отвечает на такой запрос 403).
 
 3. **AI-адаптация контента (Copywriting Uplift):**
@@ -749,21 +750,22 @@ interface IAnalyticsEvent {
 | HTTP | `code` | Когда |
 |---|---|---|
 | `400` | `VALIDATION_ERROR` | Тело, query или params не прошли Zod-схему; `message` — первая ошибка (`path: message`), `details.issues` — все ошибки Zod |
-| `400` | `INVALID_ID` | Неверный ObjectId (Mongoose `CastError` или проверка в маршрутах `/outreach` и `PATCH /mvp/:id/tokens`) |
+| `400` | `INVALID_ID` | Неверный ObjectId (Mongoose `CastError` или проверка в маршрутах `/outreach`, `PATCH /mvp/:id/tokens` и `PATCH /mvp/:id/layout`) |
 | `400` | `INVALID_JSON` | Тело запроса — невалидный JSON |
 | `413` | `PAYLOAD_TOO_LARGE` | Тело больше лимита `express.json` (10 МБ) |
 | `409` | `DUPLICATE` | Нарушение уникального индекса MongoDB (код `11000`) |
 | `404` | `NOT_FOUND` | Неизвестный маршрут |
 | `500` | `INTERNAL` | Непредвиденная ошибка; в production `message` = `Internal server error` |
 | `400` | `INVALID_URL` | `POST /leads`: `originalUrl` не разбирается как URL |
-| `404` | `LEAD_NOT_FOUND` | Лид не найден (`/leads/:id`, `/audits/trigger`, `/mvp/generate`, `/outreach/*`) |
+| `404` | `LEAD_NOT_FOUND` | Лид не найден (`/leads/:id`, `/audits/trigger`, `/mvp/generate`, `PATCH /mvp/:id/layout`, `/outreach/*`) |
 | `409` | `LEAD_NOT_AUDITABLE` | `POST /audits/trigger`: лид не в `QUEUED` / `AUDIT_FAILED` или изменился во время постановки; `details.status` |
 | `404` | `AUDIT_NOT_FOUND` | `GET /audits/:id` |
 | `400` | `LLM_PROVIDER_NOT_ALLOWED` | `POST /mvp/generate`: dev-only провайдер в production |
 | `404` | `NO_COMPLETED_AUDIT` | `POST /mvp/generate`: у лида нет завершенного аудита |
 | `409` | `MVP_GENERATION_NOT_ALLOWED` | `POST /mvp/generate`: статус лида не позволяет генерацию или лид изменился во время постановки; `details.status` |
 | `409` | `MVP_ALREADY_GENERATED` | `POST /mvp/generate`: MVP уже есть, а `forceRegenerate` не задан; `details.status` |
-| `404` | `MVP_NOT_FOUND` | `GET /mvp/:id`, `PATCH /mvp/:id/tokens` |
+| `404` | `MVP_NOT_FOUND` | `GET /mvp/:id`, `PATCH /mvp/:id/tokens`, `PATCH /mvp/:id/layout` |
+| `409` | `MVP_LAYOUT_CHANGE_NOT_ALLOWED` | `PATCH /mvp/:id/layout`: лид не в `NEEDS_APPROVAL` (идет генерация или аутрич уже запланирован/отправлен); `details.status` (REV-84) |
 | `404` | `PREVIEW_NOT_FOUND` | `GET /mvp/preview/:slug` |
 | `409` | `LEAD_NOT_AWAITING_APPROVAL` | `POST /outreach/:id/approve`: лид не в `NEEDS_APPROVAL` |
 | `409` | `LEAD_NOT_REJECTABLE` | `POST /outreach/:id/reject`: outreach уже одобрен или лид закрыт |
@@ -796,6 +798,7 @@ interface IAnalyticsEvent {
 | `GET` | `/mvp/:id` | Проект MVP по `_id`, `leadId`, `auditId` или `previewSlug` (с отчетом полноты); `404 MVP_NOT_FOUND`, если MVP нет (REV-45) | — |
 | `GET` | `/mvp/preview/:slug` | Редирект на опубликованное превью с заголовками CSP / `X-Frame-Options`; `404 PREVIEW_NOT_FOUND`, если превью нет | — |
 | `PATCH` | `/mvp/:id/tokens` | Ручная коррекция палитры оператором по `_id` проекта MVP (не лида): записываются только переданные цвета, ответ — сохраненный проект MVP; `400 INVALID_ID` для неверного id, `404 MVP_NOT_FOUND` для неизвестного, в обоих случаях ничего не записывается (REV-65). Опубликованный MVP не пересобирается | `UpdateMvpTokensSchema`: `{ primaryColor?, secondaryColor?, accentColor?, headline?, subheadline?, services? }` (сейчас сохраняется только палитра) |
+| `PATCH` | `/mvp/:id/layout` | Макет MVP, выбранный оператором (REV-84), по `_id` проекта MVP: сохраняет `layout` с причиной `rule:manual` и ставит в `deploy-queue` задачу `relayout-mvp` (debounce 1,5 с на MVP), которая перерисовывает опубликованный бандл из сохраненных текстов; ответ — сохраненный проект MVP. Тот же макет — `200` без записи и задачи. `400 INVALID_ID`, `404 MVP_NOT_FOUND` / `LEAD_NOT_FOUND`, `409 MVP_LAYOUT_CHANGE_NOT_ALLOWED` вне `NEEDS_APPROVAL`. Генерация и LLM не запускаются, статус лида не меняется | `UpdateMvpLayoutSchema`: `{ variant: 'bento' \| 'split' \| 'editorial' \| 'compact' }` |
 | `POST` | `/mvp/:id/rebuild` | *(план)* Пересборка статики после правок оператора | — |
 
 Коды ошибок `POST /mvp/generate`: `400 VALIDATION_ERROR` (неизвестный провайдер или модель другого провайдера), `400 LLM_PROVIDER_NOT_ALLOWED` (dev-only провайдер в production; сейчас таких нет), `404 NO_COMPLETED_AUDIT` / `404 LEAD_NOT_FOUND`, `409 MVP_ALREADY_GENERATED` (MVP есть, а `forceRegenerate` не задан), `409 MVP_GENERATION_NOT_ALLOWED` (письмо уже в отправке или идет генерация).
@@ -902,6 +905,7 @@ graph LR
    * Concurrency: `5`. Ретраи: 3 попытки, экспоненциальный откат от 5 с.
    * Рендер Bento, проверка полноты, выгрузка в `revamp-demos`, баннер «До/После», `Lead.status = NEEDS_APPROVAL`.
    * Обработчик `failed` (общий с AI-воркером, `generation-failure.ts`) после последнего ретрая возвращает лид из `GENERATING` и пишет `generationError`.
+   * Задачи `relayout-mvp` (`mode: 'relayout'`, REV-84): перерисовка опубликованного MVP в сохраненном макете из `MvpProject.generatedContent` тем же детерминированным шаблоном, выгрузка в тот же slug и новый баннер «До/После». Без LLM, без проверки полноты и без смены статуса лида; лид вне `NEEDS_APPROVAL` пропускается. После выгрузки макет читается снова, и если оператор успел сменить его, бандл перерисовывается (до 3 проходов). Сбой такой задачи не трогает лид.
 5. **`email-queue` Worker:**
    * Throttling: строго 1 письмо в 3 минуты (BullMQ limiter `max: 1, duration: 180000`).
    * Jitter: случайная задержка 15–45 секунд, рассчитываемая API при постановке задачи.
