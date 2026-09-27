@@ -118,15 +118,16 @@ flowchart LR
 │   ├── workers/         # Фоновые воркеры BullMQ (Playwright, AI, Deploy, Email)
 │   └── dashboard/       # Рабочее место оператора (React 18+, Vite, MUI v6, DataGrid)
 ├── packages/
-│   ├── shared-types/    # Общие TypeScript интерфейсы и DTO
-│   └── validation/      # Общие Zod-схемы для валидации данных
+│   ├── shared-types/    # Общие TypeScript интерфейсы, DTO и имена очередей
+│   ├── validation/      # Общие Zod-схемы для валидации данных
+│   └── db/              # Модели Mongoose, общие для API и воркеров (REV-48)
 ├── deploy/              # Продакшен-деплой (Docker, Nginx, скрипты)
 ├── scripts/             # Сервисные скрипты
 ├── docker-compose.yml   # MongoDB 7.0, Redis 7.0, MinIO
 └── AGENTS.md            # Правила для ИИ-разработчика (конвейер тикетов, гейты)
 ```
 
-Документация (этот репозиторий, `revamp-docs`) лежит рядом с кодом как `../Revamp-docs`: `blueprint.md`, `spec.md`, `research.md`, `milestones.md`, `AGENTS.md`, `PROJECT_COMPLETION_REPORT.md`.
+Документация (этот репозиторий, `revamp-docs`) лежит рядом с кодом как `../Revamp-docs`: `blueprint.md`, `spec.md`, `research.md`, `milestones.md`, `AGENTS.md`, `architecture-review.md`, `PROJECT_COMPLETION_REPORT.md`.
 
 ---
 
@@ -153,6 +154,7 @@ flowchart LR
 * 🏆 [**`PROJECT_COMPLETION_REPORT.md`**](./PROJECT_COMPLETION_REPORT.md) — **Итоговый отчет о завершении первоначальной дорожной карты** (`REV-1` — `REV-20`): архитектура на тот момент, результаты E2E-тестирования 20 сайтов и инструкция по развертыванию на VPS Hetzner / Cloudflare.
 * 📐 [**`blueprint.md`**](./blueprint.md) — Системный архитектурный блюпринт: описание слоев, очередей BullMQ, схемы MongoDB и диаграммы взаимодействия.
 * 📋 [**`spec.md`**](./spec.md) — Спецификация требований (SRS): функциональные требования, жизненный цикл лида, REST API эндпоинты.
+* 🧭 [**`architecture-review.md`**](./architecture-review.md) — Архитектурный обзор монорепозитория (REV-48): находки по влиянию и трудоемкости и тикеты на их исправление.
 * 🔬 [**`research.md`**](./research.md) — Архитектурные исследования, ключевые решения (ADR), пользовательские сценарии (CJM) и конкурентный анализ.
 * ⏱️ [**`milestones.md`**](./milestones.md) — 4-недельная ускоренная дорожная карта с детализацией по дням, а также развитие после релиза (`REV-21` — `REV-41`) со статусами.
 * 🤖 [**`AGENTS.md`**](./AGENTS.md) — Руководство и системные промпты для автономных ИИ-агентов платформы и ИИ-разработчика.

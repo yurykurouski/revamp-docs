@@ -213,6 +213,7 @@ gantt
 | [**REV-52**](https://linear.app/revamp-proect/issue/REV-52) | Трекер MVP загружается с API, а не с хоста хранилища; CORS для `/track/*` | Телеметрия | ✅ Done |
 | [**REV-53**](https://linear.app/revamp-proect/issue/REV-53) | Анимированный ИИ-оверлей на превью MVP во время перегенерации | Дашборд | ✅ Done |
 | [**REV-55**](https://linear.app/revamp-proect/issue/REV-55) | MVP строится по текущему завершенному аудиту лида, а не по устаревшему | MVP | ✅ Done |
+| [**REV-48**](https://linear.app/revamp-proect/issue/REV-48) | Архитектурный обзор монорепозитория ([`architecture-review.md`](./architecture-review.md)); общие модели Mongoose в `@revamp/db`; тикеты REV-59…REV-70 по находкам | Платформа | ✅ Done |
 
 ### Definition of Done для тикетов после релиза
 - [ ] Тикет в команде REV с разделами `Problem`, `Expected`, `Acceptance criteria` и меткой `Bug` / `Feature`.

@@ -82,7 +82,7 @@ graph TB
 
 ### Стек технологий:
 * **Backend:** Node.js (v20+ LTS, TypeScript), Express.js.
-* **База данных:** MongoDB (Mongoose ODM), реплика-сет, транзакции для операций статусов.
+* **База данных:** MongoDB (Mongoose ODM), реплика-сет, транзакции для операций статусов. Схемы — в общем пакете `@revamp/db`, который используют API и воркеры (REV-48).
 * **Очереди и кэш:** Redis (v7+) + BullMQ (для отказоустойчивой асинхронной обработки тяжелых задач браузера и LLM).
 * **Headless Browser & Аудит:** Playwright (Chromium), `@axe-core/playwright`, замеры Core Web Vitals в браузере, `happy-dom` для разбора HTML сгенерированного MVP.
 * **Поиск бизнесов (Discovery):** OpenStreetMap (Nominatim + Overpass, без ключа, ODbL) и Google Places API (New) Text Search (по ключу).
@@ -413,7 +413,7 @@ sequenceDiagram
 
 ## 4. Схема базы данных (MongoDB / Mongoose)
 
-> Схемы ниже отражают фактические модели `apps/api/src/models` и `apps/workers/src/models` и типы `@revamp/shared-types` на момент REV-37. Коллекция `users` и RBAC (§7) пока не реализованы.
+> Схемы ниже отражают фактические модели и типы `@revamp/shared-types`. Модели Mongoose определены один раз в пакете `@revamp/db` (`packages/db/src/models`); `apps/api/src/models` и `apps/workers/src/models` только реэкспортируют их (REV-48), поэтому API и воркеры всегда работают с одной схемой. Коллекция `users` и RBAC (§7) пока не реализованы.
 
 ```mermaid
 erDiagram
@@ -786,7 +786,7 @@ interface IAnalyticsEvent {
 
 ## 6. Архитектура очередей задач (BullMQ & Redis)
 
-Для изоляции нагрузки и предотвращения утечек памяти Playwright задачи разделены по специализированным очередям с индивидуальными лимитами конкурентности. Имена очередей — `QUEUE_NAMES` в `apps/api/src/queues/queue.constants.ts` и `apps/workers/src/queues/queue.constants.ts`.
+Для изоляции нагрузки и предотвращения утечек памяти Playwright задачи разделены по специализированным очередям с индивидуальными лимитами конкурентности. Имена очередей — `QUEUE_NAMES` в `@revamp/shared-types` (REV-48); `queues/queue.constants.ts` API и воркеров реэкспортирует их.
 
 ```mermaid
 graph LR
