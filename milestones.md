@@ -215,6 +215,7 @@ gantt
 | [**REV-55**](https://linear.app/revamp-proect/issue/REV-55) | MVP строится по текущему завершенному аудиту лида, а не по устаревшему | MVP | ✅ Done |
 | [**REV-48**](https://linear.app/revamp-proect/issue/REV-48) | Архитектурный обзор монорепозитория ([`architecture-review.md`](./architecture-review.md)); общие модели Mongoose в `@revamp/db`; тикеты REV-59…REV-70 по находкам | Платформа | ✅ Done |
 | [**REV-49**](https://linear.app/revamp-proect/issue/REV-49) | Редизайн дашборда в стиле Hyperliquid: токены темы для тёмного/светлого режима, плоские компактные компоненты, контраст WCAG AA | Дашборд | ✅ Done |
+| [**REV-59**](https://linear.app/revamp-proect/issue/REV-59) | Одобрение и отклонение аутрича проверяют статус лида (`409 LEAD_NOT_AWAITING_APPROVAL` / `LEAD_NOT_REJECTABLE`, атомарная смена статуса) | HITL | ✅ Done |
 
 ### Definition of Done для тикетов после релиза
 - [ ] Тикет в команде REV с разделами `Problem`, `Expected`, `Acceptance criteria` и меткой `Bug` / `Feature`.

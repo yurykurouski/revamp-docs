@@ -757,8 +757,8 @@ interface IAnalyticsEvent {
 | Метод | Эндпоинт | Описание | Body / Параметры |
 |---|---|---|---|
 | `GET` | `/outreach/pending` | Лиды, ожидающие ручного подтверждения (`NEEDS_APPROVAL`) | — |
-| `POST` | `/outreach/:id/approve`| **[HITL Action]** Одобрить: лид → `SCHEDULED`, письмо в `email-queue` с джиттером; `409 NO_CONTACT_EMAIL`, если у лида нет e-mail (REV-45) | `{ subject?, body?, preheader?, approvedBy?, scheduleTime? }` |
-| `POST` | `/outreach/:id/reject` | Отклонить отправку (лид → `REJECTED`) | `{ reason: string }` |
+| `POST` | `/outreach/:id/approve`| **[HITL Action]** Одобрить: лид → `SCHEDULED`, письмо в `email-queue` с джиттером. Только из `NEEDS_APPROVAL`/`AWAITING_APPROVAL`, атомарно (`findOneAndUpdate` с фильтром статуса); иначе `409 LEAD_NOT_AWAITING_APPROVAL` (REV-59). `409 NO_CONTACT_EMAIL`, если у лида нет e-mail (REV-45); `404 LEAD_NOT_FOUND` | `{ subject?, body?, preheader?, approvedBy?, scheduleTime? }` |
+| `POST` | `/outreach/:id/reject` | Отклонить отправку (лид → `REJECTED`). Только до одобрения, атомарно; для `APPROVED`, `SCHEDULED` и далее, `REJECTED`, `UNSUBSCRIBED` — `409 LEAD_NOT_REJECTABLE` (REV-59); `404 LEAD_NOT_FOUND` | `{ reason: string }` |
 | `POST` | `/outreach/:id/test`   | Тестовое письмо на почту оператора | `{ testEmail: string }` |
 | `PUT` | `/outreach/:id/draft` | *(план)* Сохранение черновика без отправки | `{ subject, bodyHtml }` |
 
