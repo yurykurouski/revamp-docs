@@ -495,6 +495,7 @@ erDiagram
         Date approvedAt
         Date scheduledAt
         Date sentAt
+        Date unsubscribedAt
         object metrics
     }
 
@@ -561,9 +562,13 @@ stateDiagram-v2
     SENT --> OPENED: пиксель
     OPENED --> CLICKED: клик-редирект
     CLICKED --> ENGAGED: dwell time / CTA в демо
+    SENT --> UNSUBSCRIBED: POST /track/unsubscribe/:token
+    OPENED --> UNSUBSCRIBED: POST /track/unsubscribe/:token
+    CLICKED --> UNSUBSCRIBED: POST /track/unsubscribe/:token
+    ENGAGED --> UNSUBSCRIBED: POST /track/unsubscribe/:token
 ```
 
-Статусы `PENDING`, `MVP_READY`, `AWAITING_APPROVAL`, `APPROVED`, `DISPATCHED`, `REPLIED`, `UNSUBSCRIBED` остаются в типе `LeadStatus` для совместимости и группируются дашбордом с соседними колонками Kanban, но воркеры их не выставляют.
+`UNSUBSCRIBED` выставляет только `POST /track/unsubscribe/:token` (REV-73), из любого статуса после отправки; одобрение и email worker такому лиду отказывают. Статусы `PENDING`, `MVP_READY`, `AWAITING_APPROVAL`, `APPROVED`, `DISPATCHED`, `REPLIED` остаются в типе `LeadStatus` для совместимости и группируются дашбордом с соседними колонками Kanban, но воркеры их не выставляют.
 
 #### 2. `audits`
 ```typescript
@@ -683,7 +688,7 @@ interface IEmailCampaign {
   leadId: Types.ObjectId;
   auditId: Types.ObjectId;
   mvpProjectId: Types.ObjectId;
-  status: 'DRAFT' | 'NEEDS_APPROVAL' | 'APPROVED' | 'SCHEDULED' | 'SENDING' | 'DELIVERED' | 'BOUNCED' | 'REJECTED';
+  status: 'DRAFT' | 'NEEDS_APPROVAL' | 'APPROVED' | 'SCHEDULED' | 'SENDING' | 'DELIVERED' | 'BOUNCED' | 'REJECTED' | 'UNSUBSCRIBED';
   senderEmail: string;
   recipientEmail: string;
   subject: string;
@@ -698,6 +703,7 @@ interface IEmailCampaign {
   sentAt?: Date;
   bouncedAt?: Date;
   bounceReason?: string;
+  unsubscribedAt?: Date;   // первый POST /track/unsubscribe/:token (REV-73)
   metrics: {
     openedAt?: Date;
     openCount: number;
@@ -713,7 +719,7 @@ interface IAnalyticsEvent {
   campaignId?: Types.ObjectId;
   mvpProjectId?: Types.ObjectId;
   trackingToken?: string;
-  eventType: 'open' | 'click' | 'pageview' | 'dwell_time' | 'cta_click' | 'booking_intent' | 'scroll_depth' | 'token_usage';
+  eventType: 'open' | 'click' | 'pageview' | 'dwell_time' | 'cta_click' | 'booking_intent' | 'scroll_depth' | 'token_usage' | 'unsubscribe';
   dwellTimeSeconds?: number;
   scrollDepthPercent?: number;
   ipHash?: string;
@@ -776,6 +782,8 @@ interface IAnalyticsEvent {
 | `GET` | `/track/open/:token.gif` | 1x1 прозрачный пиксель отслеживания открытия письма (лид → `OPENED`) |
 | `GET` | `/track/click/:token` | Редирект на демо-сайт с логированием клика (лид → `CLICKED`) |
 | `POST` | `/track/mvp-event` | Beacon API: время на странице, скролл, клики в демо (лид → `ENGAGED`) |
+| `GET` | `/track/unsubscribe/:token` | HTML-страница подтверждения отписки с кнопкой (POST на тот же адрес); ничего не меняет, чтобы сканеры ссылок не отписывали получателей (RFC 8058). «Вы отписаны», если отписка уже была; `404` для неизвестного токена (REV-73) |
+| `POST` | `/track/unsubscribe/:token` | One-click отписка (RFC 8058, тело `List-Unsubscribe=One-Click`) и кнопка подтверждения: лид и `EmailCampaign` → `UNSUBSCRIBED`, `unsubscribedAt`, событие `unsubscribe`; `200`, идемпотентно; `404` для неизвестного токена без изменений (REV-73) |
 | `GET` | `/track/revamp-tracker.js` | Скрипт трекинга для страниц MVP (`Cross-Origin-Resource-Policy: cross-origin`, чтобы страница из хранилища могла его загрузить) |
 | `GET` | `/health` | Проверка доступности API, MongoDB и Redis |
 | `GET` | `/analytics/overview` | *(план)* Метрики воронки, open rate, CTR, средний скоринг |
