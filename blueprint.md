@@ -275,6 +275,8 @@ flowchart TD
 
    * **Только реальные данные (REV-23):** шаблон не содержит выдуманных значений по умолчанию. Кнопка звонка, полоса доверия, отзывы, часы работы и контакты отображаются только при наличии извлеченных данных. Добавлены секции «О нас», hero-изображение, галерея и соцсети; адрес ведет на Google Maps. Бледный основной цвет заменяется читаемым фирменным или затемняется до контраста 3:1.
    * **Язык сайта (REV-25):** `<html lang>` получает BCP 47-тег исходного сайта, фиксированный UI-текст шаблона (подписи секций, форма, футер) и детерминированный fallback локализованы для en, ru, be, pl, lt (для прочих языков — английский UI при корректном `lang`).
+   * **Варианты макета (REV-54):** вместо одной Bento-структуры шаблон рендерит один из четырех макетов (`MVP_LAYOUT_VARIANTS`): `bento` (исходный, по умолчанию и для старых MVP), `split` (hero из текста и фото, галерея сразу после hero, услуги плитками), `editorial` (типографический, заголовки с засечками, сначала «О нас», услуги нумерованным списком) и `compact` (короткая визитка: темный hero с проверенными контактами рядом с заголовком, компактные плитки услуг). Все макеты выводят одни и те же проверенные данные; меняются только разметка, CSS (в бандл встраивается CSS только выбранного макета) и порядок секций.
+   * **Выбор макета** детерминирован (`layout-selection.service.ts`, без LLM) и делается в `deploy-queue` по данным аудита: сайт с ≤2 услугами или одностраничная визитка с ≤4 услугами → `compact`; визуальные ниши (`restaurant`, `beauty`, `fitness`, `construction`, `auto`) с hero-фото и ≥2 изображениями → `split`; экспертные ниши (`legal`, `medical`, `dental`) с ≥6 абзацами текста → `editorial`; прочие сайты с hero-фото и ≥6 изображениями → `split`; блок «О нас», ≥8 абзацев и <4 изображений → `editorial`; иначе `bento`. Результат валидируется `MvpLayoutSelectionSchema` и сохраняется в `MvpProject.layout` (`variant` + коды причин, например `rule:visual_niche`, `images:8`); перегенерация по тому же аудиту дает тот же макет. Дашборд показывает макет чипом в инспекторе.
 
 3. **AI-адаптация контента (Copywriting Uplift):**
    * LLM переписывает тексты исходного сайта (`Audit.extractedContent`) в емкие, продающие офферы на **языке исходного сайта** (`outputLanguage`), сохраняя 100% фактической информации. Телефоны, e-mail и адреса LLM не выводит вовсе: они подставляются из проверенных данных.
@@ -471,6 +473,7 @@ erDiagram
         object generatedContent
         object colorPalette
         object completenessReport
+        object layout
         string provider
         string modelUsed
         string requestedProvider
@@ -645,6 +648,10 @@ interface IMvpProject {
   isPublished: boolean;
   generatedAt?: Date;             // REV-31
   generationCount?: number;       // REV-31
+  layout?: {                      // REV-54; нет у MVP, созданных до REV-54 (Bento)
+    variant: 'bento' | 'split' | 'editorial' | 'compact';
+    reasons: string[];            // коды причин выбора: 'rule:image_rich', 'niche:dental', 'images:8'
+  };
   completenessReport?: {          // REV-36/37
     status: 'verified' | 'unverified';
     score?: number;               // 0-100, веса critical 3 / important 2 / informational 1
