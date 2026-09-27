@@ -207,7 +207,7 @@ gantt
 | [**REV-40**](https://linear.app/revamp-proect/issue/REV-40) | Индикатор прогресса поиска бизнесов в фоне | Discovery | ✅ Done |
 | [**REV-41**](https://linear.app/revamp-proect/issue/REV-41) | Уведомление о завершении поиска бизнесов в фоне с открытием результатов по клику | Discovery | ✅ Done |
 | [**REV-44**](https://linear.app/revamp-proect/issue/REV-44) | Лиды застревают в `AUDITING` после неудачного аудита | Аудит | ✅ Done |
-| [**REV-45**](https://linear.app/revamp-proect/issue/REV-45) | Убрать mock-данные и mock-провайдеры из рабочего кода: ошибки и пустые состояния вместо выдуманных данных | Платформа | 🔄 In Review |
+| [**REV-45**](https://linear.app/revamp-proect/issue/REV-45) | Убрать mock-данные и mock-провайдеры из рабочего кода: ошибки и пустые состояния вместо выдуманных данных | Платформа | ✅ Done |
 | [**REV-46**](https://linear.app/revamp-proect/issue/REV-46) | Сворачиваемое боковое меню дашборда (в свернутом виде — только иконки) | Дашборд | ✅ Done |
 
 ### Definition of Done для тикетов после релиза
