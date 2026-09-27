@@ -230,6 +230,7 @@ gantt
 | [**REV-80**](https://linear.app/revamp-proect/issue/REV-80) | Быстрые фильтры очереди ревью по статусу и диапазону оценки (ниже 40, 40–69, 70+): привязаны к группе и сбрасываются при ее смене, подпись «N из M», отдельное пустое состояние с «Сбросить фильтры», `J` / `K` / `Enter` по отфильтрованному списку | Дашборд | ✅ Done |
 | [**REV-84**](https://linear.app/revamp-proect/issue/REV-84) | Живая смена макета MVP на шаге «Прототип»: все четыре макета в бандле, переключение в песочнице через `REVAMP_SET_LAYOUT` с анимацией View Transitions без перезагрузки iframe и без LLM; выбор сохраняется `PATCH /mvp/:id/layout` (`rule:manual`), `deploy-queue` перерисовывает опубликованный бандл | MVP | ✅ Done |
 | [**REV-65**](https://linear.app/revamp-proect/issue/REV-65) | `PATCH /mvp/:id/tokens`: `400 INVALID_ID` / `404 MVP_NOT_FOUND` без записи вместо `200`, ответ — сохраненный проект MVP; дашборд сохраняет палитру по `_id` MVP, а не лида, и показывает ошибку сохранения | MVP | ✅ Done |
+| [**REV-67**](https://linear.app/revamp-proect/issue/REV-67) | Клиент API дашборда типизирует ответы через `Serialized<T>` (`@revamp/shared-types`) от `ILead`, `IAudit`, `IMvpProject` вместо собственных копий; устаревшие поля (`url`, `score`, `contacts.*`, `lcp`, `a11yScore`, скриншоты верхнего уровня) не читаются; лид без `_id` — ошибка «Malformed server response», а не случайный id | Платформа | ✅ Done |
 
 ### Definition of Done для тикетов после релиза
 - [ ] Тикет в команде REV с разделами `Problem`, `Expected`, `Acceptance criteria` и меткой `Bug` / `Feature`.

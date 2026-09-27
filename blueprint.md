@@ -747,6 +747,8 @@ interface IAnalyticsEvent {
 
 **Формат ошибок (REV-63).** Все ошибки API имеют один формат: `{ success: false, error: { code, message, details? } }` (`IApiErrorResponse` из `@revamp/shared-types`). `code` — машиночитаемый код из `API_ERROR_CODES`, по нему клиент выбирает поведение; `message` — текст для оператора; `details` — необязательный контекст (например, `{ status }` лида или список ошибок Zod). Маршруты и сервисы не пишут JSON ошибок сами, а бросают `AppError(statusCode, code, message, details?)`; ответ формирует только `errorHandler`. Дашборд читает только `error.code` / `error.message` и бросает `ApiError` (`message`, `status`, `code`, `details`).
 
+**Типы ответов в дашборде (REV-67).** Дашборд не объявляет форму ответов заново: лид, аудит и проект MVP типизированы как `Serialized<ILead>`, `Serialized<IAudit>`, `Serialized<IMvpProject>` (`Serialized<T>` из `@revamp/shared-types` превращает `Date` в ISO-строку, как в JSON). Мапперы читают только поля, которые возвращает API; лид без `_id` считается некорректным ответом. `GET /leads` не возвращает id аудита, поэтому дашборд запрашивает `GET /audits/:id` с id лида, и API отдает последний аудит лида.
+
 | HTTP | `code` | Когда |
 |---|---|---|
 | `400` | `VALIDATION_ERROR` | Тело, query или params не прошли Zod-схему; `message` — первая ошибка (`path: message`), `details.issues` — все ошибки Zod |
