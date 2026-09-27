@@ -220,6 +220,7 @@ gantt
 | [**REV-59**](https://linear.app/revamp-proect/issue/REV-59) | Одобрение и отклонение аутрича проверяют статус лида (`409 LEAD_NOT_AWAITING_APPROVAL` / `LEAD_NOT_REJECTABLE`, атомарная смена статуса) | HITL | ✅ Done |
 | [**REV-72**](https://linear.app/revamp-proect/issue/REV-72) | Одобренное письмо отправляется так, как его показывает превью: без `{{переменных}}`, экранированный HTML с переносами строк и текстовая часть; общий `draftToHtml` с тестовой отправкой | HITL | ✅ Done |
 | [**REV-73**](https://linear.app/revamp-proect/issue/REV-73) | One-click отписка `GET`/`POST /track/unsubscribe/:token`: подтверждение по `GET`, отписка по `POST` (RFC 8058), лид и кампания → `UNSUBSCRIBED`, `404` для неизвестного токена | Аутрич | ✅ Done |
+| [**REV-61**](https://linear.app/revamp-proect/issue/REV-61) | Отправка аутрича не больше одного раза на одобрение (захват кампании `SCHEDULED` → `SENDING`, ретраи без повторной отправки) и только с одобренным текстом: без текста по умолчанию, `subject` и `body` обязательны при одобрении | Аутрич | ✅ Done |
 
 ### Definition of Done для тикетов после релиза
 - [ ] Тикет в команде REV с разделами `Problem`, `Expected`, `Acceptance criteria` и меткой `Bug` / `Feature`.
