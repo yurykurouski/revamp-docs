@@ -768,6 +768,7 @@ interface IAnalyticsEvent {
 | `409` | `MVP_ALREADY_GENERATED` | `POST /mvp/generate`: MVP уже есть, а `forceRegenerate` не задан; `details.status` |
 | `404` | `MVP_NOT_FOUND` | `GET /mvp/:id`, `PATCH /mvp/:id/tokens`, `PATCH /mvp/:id/layout` |
 | `409` | `MVP_LAYOUT_CHANGE_NOT_ALLOWED` | `PATCH /mvp/:id/layout`: лид не в `NEEDS_APPROVAL` (идет генерация или аутрич уже запланирован/отправлен); `details.status` (REV-84) |
+| `409` | `MVP_PALETTE_CHANGE_NOT_ALLOWED` | `PATCH /mvp/:id/tokens`: лид не в `NEEDS_APPROVAL` (идет генерация или аутрич уже запланирован/отправлен); `details.status` (REV-90) |
 | `404` | `PREVIEW_NOT_FOUND` | `GET /mvp/preview/:slug` |
 | `409` | `LEAD_NOT_AWAITING_APPROVAL` | `POST /outreach/:id/approve`: лид не в `NEEDS_APPROVAL` |
 | `409` | `LEAD_NOT_REJECTABLE` | `POST /outreach/:id/reject`: outreach уже одобрен или лид закрыт |
@@ -799,7 +800,7 @@ interface IAnalyticsEvent {
 | `POST` | `/mvp/generate` | Запуск генерации/перегенерации MVP → `202 { jobId, status: 'GENERATING' }` | `GenerateMvpSchema`: `{ auditId, forceRegenerate?, provider?, model? }` |
 | `GET` | `/mvp/:id` | Проект MVP по `_id`, `leadId`, `auditId` или `previewSlug` (с отчетом полноты); `404 MVP_NOT_FOUND`, если MVP нет (REV-45) | — |
 | `GET` | `/mvp/preview/:slug` | Редирект на опубликованное превью с заголовками CSP / `X-Frame-Options`; `404 PREVIEW_NOT_FOUND`, если превью нет | — |
-| `PATCH` | `/mvp/:id/tokens` | Ручная коррекция палитры оператором по `_id` проекта MVP (не лида): записываются только переданные цвета, ответ — сохраненный проект MVP; `400 INVALID_ID` для неверного id, `404 MVP_NOT_FOUND` для неизвестного, в обоих случаях ничего не записывается (REV-65). Опубликованный MVP не пересобирается | `UpdateMvpTokensSchema`: `{ primaryColor?, secondaryColor?, accentColor?, headline?, subheadline?, services? }` (сейчас сохраняется только палитра) |
+| `PATCH` | `/mvp/:id/tokens` | Ручная коррекция палитры оператором по `_id` проекта MVP (не лида): записываются только переданные цвета, ответ — сохраненный проект MVP; `400 INVALID_ID` для неверного id, `404 MVP_NOT_FOUND` для неизвестного, в обоих случаях ничего не записывается (REV-65). Затем ставит в `deploy-queue` задачу `relayout-mvp` (тот же debounce 1,5 с), которая перерисовывает опубликованный бандл в сохраненной палитре и макете (REV-90). `404 LEAD_NOT_FOUND`, `409 MVP_PALETTE_CHANGE_NOT_ALLOWED` вне `NEEDS_APPROVAL` | `UpdateMvpTokensSchema`: `{ primaryColor?, secondaryColor?, accentColor?, headline?, subheadline?, services? }` (сейчас сохраняется только палитра) |
 | `PATCH` | `/mvp/:id/layout` | Макет MVP, выбранный оператором (REV-84), по `_id` проекта MVP: сохраняет `layout` с причиной `rule:manual` и ставит в `deploy-queue` задачу `relayout-mvp` (debounce 1,5 с на MVP), которая перерисовывает опубликованный бандл из сохраненных текстов; ответ — сохраненный проект MVP. Тот же макет — `200` без записи и задачи. `400 INVALID_ID`, `404 MVP_NOT_FOUND` / `LEAD_NOT_FOUND`, `409 MVP_LAYOUT_CHANGE_NOT_ALLOWED` вне `NEEDS_APPROVAL`. Генерация и LLM не запускаются, статус лида не меняется | `UpdateMvpLayoutSchema`: `{ variant: 'bento' \| 'split' \| 'editorial' \| 'compact' }` |
 | `POST` | `/mvp/:id/rebuild` | *(план)* Пересборка статики после правок оператора | — |
 
@@ -907,7 +908,7 @@ graph LR
    * Concurrency: `5`. Ретраи: 3 попытки, экспоненциальный откат от 5 с.
    * Рендер Bento, проверка полноты, выгрузка в `revamp-demos`, баннер «До/После», `Lead.status = NEEDS_APPROVAL`.
    * Обработчик `failed` (общий с AI-воркером, `generation-failure.ts`) после последнего ретрая возвращает лид из `GENERATING` и пишет `generationError`.
-   * Задачи `relayout-mvp` (`mode: 'relayout'`, REV-84): перерисовка опубликованного MVP в сохраненном макете из `MvpProject.generatedContent` тем же детерминированным шаблоном, выгрузка в тот же slug и новый баннер «До/После». Без LLM, без проверки полноты и без смены статуса лида; лид вне `NEEDS_APPROVAL` пропускается. После выгрузки макет читается снова, и если оператор успел сменить его, бандл перерисовывается (до 3 проходов). Сбой такой задачи не трогает лид.
+   * Задачи `relayout-mvp` (`mode: 'relayout'`, REV-84, REV-90): перерисовка опубликованного MVP в сохраненном макете и палитре (`MvpProject.colorPalette` вместо цветов аудита) из `MvpProject.generatedContent` тем же детерминированным шаблоном, выгрузка в тот же slug и новый баннер «До/После». Без LLM, без проверки полноты и без смены статуса лида; лид вне `NEEDS_APPROVAL` пропускается. После выгрузки макет читается снова, и если оператор успел сменить его, бандл перерисовывается (до 3 проходов). Сбой такой задачи не трогает лид.
 5. **`email-queue` Worker:**
    * Throttling: строго 1 письмо в 3 минуты (BullMQ limiter `max: 1, duration: 180000`).
    * Jitter: случайная задержка 15–45 секунд, рассчитываемая API при постановке задачи.

@@ -232,6 +232,7 @@ gantt
 | [**REV-65**](https://linear.app/revamp-proect/issue/REV-65) | `PATCH /mvp/:id/tokens`: `400 INVALID_ID` / `404 MVP_NOT_FOUND` без записи вместо `200`, ответ — сохраненный проект MVP; дашборд сохраняет палитру по `_id` MVP, а не лида, и показывает ошибку сохранения | MVP | ✅ Done |
 | [**REV-67**](https://linear.app/revamp-proect/issue/REV-67) | Клиент API дашборда типизирует ответы через `Serialized<T>` (`@revamp/shared-types`) от `ILead`, `IAudit`, `IMvpProject` вместо собственных копий; устаревшие поля (`url`, `score`, `contacts.*`, `lcp`, `a11yScore`, скриншоты верхнего уровня) не читаются; лид без `_id` — ошибка «Malformed server response», а не случайный id | Платформа | ✅ Done |
 | [**REV-88**](https://linear.app/revamp-proect/issue/REV-88) | Плавающая панель «Инструменты дизайна» поверх превью MVP: цвет бренда и макет в одной перетаскиваемой панели (в пределах вьюпорта на всех ширинах, стрелки и Home с клавиатуры, сворачивание, положение на сессию) вместо статичной строки над iframe | MVP | ✅ Done |
+| [**REV-90**](https://linear.app/revamp-proect/issue/REV-90) | Палитра оператора доходит до опубликованного MVP: `PATCH /mvp/:id/tokens` ставит `relayout-mvp`, воркер рендерит сохраненные `colorPalette` и макет, пикер стартует с палитры MVP и блокируется вне `NEEDS_APPROVAL` (`409 MVP_PALETTE_CHANGE_NOT_ALLOWED`) | MVP | ✅ Done |
 
 ### Definition of Done для тикетов после релиза
 - [ ] Тикет в команде REV с разделами `Problem`, `Expected`, `Acceptance criteria` и меткой `Bug` / `Feature`.
