@@ -759,7 +759,7 @@ interface IAnalyticsEvent {
 | `GET` | `/outreach/pending` | Лиды, ожидающие ручного подтверждения (`NEEDS_APPROVAL`) | — |
 | `POST` | `/outreach/:id/approve`| **[HITL Action]** Одобрить: лид → `SCHEDULED`, письмо в `email-queue` с джиттером. Только из `NEEDS_APPROVAL`/`AWAITING_APPROVAL`, атомарно (`findOneAndUpdate` с фильтром статуса); иначе `409 LEAD_NOT_AWAITING_APPROVAL` (REV-59). `409 NO_CONTACT_EMAIL`, если у лида нет e-mail (REV-45); `404 LEAD_NOT_FOUND` | `{ subject?, body?, preheader?, approvedBy?, scheduleTime? }` |
 | `POST` | `/outreach/:id/reject` | Отклонить отправку (лид → `REJECTED`). Только до одобрения, атомарно; для `APPROVED`, `SCHEDULED` и далее, `REJECTED`, `UNSUBSCRIBED` — `409 LEAD_NOT_REJECTABLE` (REV-59); `404 LEAD_NOT_FOUND` | `{ reason: string }` |
-| `POST` | `/outreach/:id/test`   | Тестовое письмо на почту оператора | `{ testEmail: string }` |
+| `POST` | `/outreach/:id/test`   | Отправляет текущий черновик (как в превью, с подставленными переменными) на почту оператора через `email-test-queue` и ждёт результата воркера до 30 с (REV-60). Не проходит HITL-гейт, не добавляет пиксель открытий и не меняет лид и `EmailCampaign`. `200` с `{ to, messageId, provider, sentAt }`; `503 EMAIL_PROVIDER_NOT_CONFIGURED`, если `EMAIL_PROVIDER` не задан в API или у воркеров; `502 EMAIL_SEND_FAILED` при ошибке провайдера; `504 EMAIL_TEST_TIMEOUT`, если воркеры не ответили (ожидающая задача удаляется); `404 LEAD_NOT_FOUND`; `400` для неверного id или тела | `{ testEmail, subject, body, preheader? }` |
 | `PUT` | `/outreach/:id/draft` | *(план)* Сохранение черновика без отправки | `{ subject, bodyHtml }` |
 
 ### 5.4. Поиск локальных бизнесов (`/discovery`) — REV-26…REV-29
@@ -804,6 +804,7 @@ graph LR
         Q_AI[(ai-gen-queue)]
         Q_Deploy[(deploy-queue)]
         Q_Mail[(email-queue)]
+        Q_Test[(email-test-queue)]
     end
 
     subgraph Workers_Pool [Node.js Workers]
@@ -812,6 +813,7 @@ graph LR
         W2[AI Worker<br/>Concurrency: 5]
         W3[Deploy Worker<br/>Concurrency: 5]
         W4[Email Dispatcher<br/>Concurrency: 1, 1 письмо / 180 с]
+        W5[Email Test Sender<br/>Concurrency: 1, без лимита]
     end
 
     API_Disc --> Q_Disc --> W0
@@ -828,6 +830,7 @@ graph LR
     HITL --> API_Approve
     API_Approve --> Q_Mail
     Q_Mail --> W4
+    HITL -->|Тест себе| Q_Test --> W5
 ```
 
 ### Настройки воркеров:
@@ -850,6 +853,10 @@ graph LR
    * Throttling: строго 1 письмо в 3 минуты (BullMQ limiter `max: 1, duration: 180000`).
    * Jitter: случайная задержка 15–45 секунд, рассчитываемая API при постановке задачи.
    * Провайдер: `EMAIL_PROVIDER` (`resend`, `sendgrid` или `smtp`), значения по умолчанию нет. Без него задача отправки завершается ошибкой, а не помечает письмо отправленным (REV-45).
+6. **`email-test-queue` Worker (REV-60):**
+   * Тестовая отправка черновика оператору. Отдельная очередь, чтобы тест не ждал лимита аутрича и не задерживал его: concurrency `1`, без limiter, 1 попытка без ретраев (оператор ждёт ответа).
+   * Тот же `emailService` и провайдер, что у `email-queue`, но без HITL-гейта, MX-проверки и пикселя открытий (`trackOpens: false`); тема с префиксом `[Test]`. Лид и `EmailCampaign` не читаются и не меняются.
+   * API ждёт результата через `QueueEvents` до 30 с. Без провайдера задача падает с `EMAIL_PROVIDER_NOT_CONFIGURED`, и API отвечает `503`.
 
 ---
 
