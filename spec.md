@@ -359,6 +359,14 @@ graph TD
 * **Требование 3.5.1.1:** Архитектура сервиса построена на модульном монолите с разделением слоев: `Routes -> Controllers -> Services -> Repositories -> Models`.
 * **Требование 3.5.1.2:** Использование TypeScript со строгой типизацией на всех уровнях.
 * **Требование 3.5.1.3:** Централизованная обработка ошибок с логированием (Winston / Pino) и валидацией всех входящих DTO через `Zod`.
+* **Требование 3.5.1.4 (REV-63):** Все ошибки API возвращаются в одном формате `{ success: false, error: { code, message, details? } }`. Маршруты и сервисы бросают `AppError(statusCode, code, message, details?)`, JSON ошибки формирует только глобальный `errorHandler`. Коды (`API_ERROR_CODES` в `@revamp/shared-types`; полная таблица с HTTP-статусами — blueprint.md §5):
+  - общие: `VALIDATION_ERROR` (400, ошибки Zod в `details.issues`), `INVALID_ID` (400), `INVALID_JSON` (400), `PAYLOAD_TOO_LARGE` (413), `DUPLICATE` (409), `NOT_FOUND` (404, неизвестный маршрут), `INTERNAL` (500, текст скрыт в production);
+  - лиды и аудиты: `INVALID_URL`, `LEAD_NOT_FOUND`, `LEAD_NOT_AUDITABLE`, `AUDIT_NOT_FOUND`;
+  - MVP: `LLM_PROVIDER_NOT_ALLOWED`, `NO_COMPLETED_AUDIT`, `MVP_GENERATION_NOT_ALLOWED`, `MVP_ALREADY_GENERATED`, `MVP_NOT_FOUND`, `PREVIEW_NOT_FOUND`;
+  - аутрич: `LEAD_NOT_AWAITING_APPROVAL`, `LEAD_NOT_REJECTABLE`, `NO_CONTACT_EMAIL`, `EMAIL_PROVIDER_NOT_CONFIGURED`, `EMAIL_TEST_TIMEOUT`, `EMAIL_SEND_FAILED`;
+  - поиск бизнесов: `DISCOVERY_JOB_NOT_FOUND`, `DISCOVERY_JOB_NOT_COMPLETED`, `GEOCODING_UNAVAILABLE`, `PLACE_NOT_FOUND`.
+
+  Клиенты (дашборд) выбирают поведение по `error.code` и показывают оператору `error.message`.
 
 #### 3.5.2. База данных (MongoDB & Mongoose)
 * **Требование 3.5.2.1:** Использование официального ODM `mongoose` с поддержкой индексов для быстрого поиска по статусам, датам и URL.

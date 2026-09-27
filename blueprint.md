@@ -740,7 +740,41 @@ interface IAnalyticsEvent {
 
 ## 5. Спецификация REST API (Express.js)
 
-Базовый путь: `/api/v1`. Тела запросов и query-параметры валидируются Zod-схемами из `@revamp/validation` (`validateBody` / `validateQuery`). Ответы: `{ success: true, data }` или `{ success: false, error: { code, message } }`. Эндпоинты с пометкой *(план)* описаны в первоначальном дизайне, но еще не реализованы.
+Базовый путь: `/api/v1`. Тела запросов и query-параметры валидируются Zod-схемами из `@revamp/validation` (`validateBody` / `validateQuery`). Ответы: `{ success: true, data }` или `{ success: false, error: { code, message, details? } }`. Эндпоинты с пометкой *(план)* описаны в первоначальном дизайне, но еще не реализованы.
+
+**Формат ошибок (REV-63).** Все ошибки API имеют один формат: `{ success: false, error: { code, message, details? } }` (`IApiErrorResponse` из `@revamp/shared-types`). `code` — машиночитаемый код из `API_ERROR_CODES`, по нему клиент выбирает поведение; `message` — текст для оператора; `details` — необязательный контекст (например, `{ status }` лида или список ошибок Zod). Маршруты и сервисы не пишут JSON ошибок сами, а бросают `AppError(statusCode, code, message, details?)`; ответ формирует только `errorHandler`. Дашборд читает только `error.code` / `error.message` и бросает `ApiError` (`message`, `status`, `code`, `details`).
+
+| HTTP | `code` | Когда |
+|---|---|---|
+| `400` | `VALIDATION_ERROR` | Тело, query или params не прошли Zod-схему; `message` — первая ошибка (`path: message`), `details.issues` — все ошибки Zod |
+| `400` | `INVALID_ID` | Неверный ObjectId (Mongoose `CastError` или проверка в маршрутах `/outreach`) |
+| `400` | `INVALID_JSON` | Тело запроса — невалидный JSON |
+| `413` | `PAYLOAD_TOO_LARGE` | Тело больше лимита `express.json` (10 МБ) |
+| `409` | `DUPLICATE` | Нарушение уникального индекса MongoDB (код `11000`) |
+| `404` | `NOT_FOUND` | Неизвестный маршрут |
+| `500` | `INTERNAL` | Непредвиденная ошибка; в production `message` = `Internal server error` |
+| `400` | `INVALID_URL` | `POST /leads`: `originalUrl` не разбирается как URL |
+| `404` | `LEAD_NOT_FOUND` | Лид не найден (`/leads/:id`, `/audits/trigger`, `/mvp/generate`, `/outreach/*`) |
+| `409` | `LEAD_NOT_AUDITABLE` | `POST /audits/trigger`: лид не в `QUEUED` / `AUDIT_FAILED` или изменился во время постановки; `details.status` |
+| `404` | `AUDIT_NOT_FOUND` | `GET /audits/:id` |
+| `400` | `LLM_PROVIDER_NOT_ALLOWED` | `POST /mvp/generate`: dev-only провайдер в production |
+| `404` | `NO_COMPLETED_AUDIT` | `POST /mvp/generate`: у лида нет завершенного аудита |
+| `409` | `MVP_GENERATION_NOT_ALLOWED` | `POST /mvp/generate`: статус лида не позволяет генерацию или лид изменился во время постановки; `details.status` |
+| `409` | `MVP_ALREADY_GENERATED` | `POST /mvp/generate`: MVP уже есть, а `forceRegenerate` не задан; `details.status` |
+| `404` | `MVP_NOT_FOUND` | `GET /mvp/:id` |
+| `404` | `PREVIEW_NOT_FOUND` | `GET /mvp/preview/:slug` |
+| `409` | `LEAD_NOT_AWAITING_APPROVAL` | `POST /outreach/:id/approve`: лид не в `NEEDS_APPROVAL` |
+| `409` | `LEAD_NOT_REJECTABLE` | `POST /outreach/:id/reject`: outreach уже одобрен или лид закрыт |
+| `409` | `NO_CONTACT_EMAIL` | `POST /outreach/:id/approve`: у лида нет e-mail |
+| `503` | `EMAIL_PROVIDER_NOT_CONFIGURED` | `POST /outreach/:id/test`: `EMAIL_PROVIDER` не задан в API или у воркеров |
+| `504` | `EMAIL_TEST_TIMEOUT` | `POST /outreach/:id/test`: воркеры не ответили за 30 с |
+| `502` | `EMAIL_SEND_FAILED` | `POST /outreach/:id/test`: ошибка почтового провайдера |
+| `404` | `DISCOVERY_JOB_NOT_FOUND` | `GET /discovery/:jobId`, `POST /discovery/:jobId/import` |
+| `409` | `DISCOVERY_JOB_NOT_COMPLETED` | `POST /discovery/:jobId/import`: задача еще не завершена |
+| `502` | `GEOCODING_UNAVAILABLE` | `GET /discovery/reverse-geocode`: сбой Nominatim |
+| `404` | `PLACE_NOT_FOUND` | `GET /discovery/reverse-geocode`: место не найдено |
+
+Исключения: `GET /health` отвечает `503` телом отчета о состоянии (`status: "degraded"`), а страницы отписки `/track/unsubscribe/:token` — HTML.
 
 ### 5.1. Управление лидами и аудитами (`/leads`, `/audits`)
 | Метод | Эндпоинт | Описание | Body / Параметры |
@@ -757,12 +791,12 @@ interface IAnalyticsEvent {
 |---|---|---|---|
 | `GET` | `/mvp/providers` | LLM-провайдеры и модели для генерации и доступность каждого по последнему отчету воркеров (REV-32) | — |
 | `POST` | `/mvp/generate` | Запуск генерации/перегенерации MVP → `202 { jobId, status: 'GENERATING' }` | `GenerateMvpSchema`: `{ auditId, forceRegenerate?, provider?, model? }` |
-| `GET` | `/mvp/:id` | Проект MVP по `_id`, `leadId`, `auditId` или `previewSlug` (с отчетом полноты); `404`, если MVP нет (REV-45) | — |
-| `GET` | `/mvp/preview/:slug` | Редирект на опубликованное превью с заголовками CSP / `X-Frame-Options` | — |
+| `GET` | `/mvp/:id` | Проект MVP по `_id`, `leadId`, `auditId` или `previewSlug` (с отчетом полноты); `404 MVP_NOT_FOUND`, если MVP нет (REV-45) | — |
+| `GET` | `/mvp/preview/:slug` | Редирект на опубликованное превью с заголовками CSP / `X-Frame-Options`; `404 PREVIEW_NOT_FOUND`, если превью нет | — |
 | `PATCH` | `/mvp/:id/tokens` | Ручная коррекция палитры оператором | `UpdateMvpTokensSchema`: `{ primaryColor?, secondaryColor?, accentColor?, headline?, subheadline?, services? }` (сейчас сохраняется только палитра) |
 | `POST` | `/mvp/:id/rebuild` | *(план)* Пересборка статики после правок оператора | — |
 
-Коды ошибок `POST /mvp/generate`: `400` ошибка валидации (неизвестный провайдер или модель другого провайдера), `400 LLM_PROVIDER_NOT_ALLOWED` (dev-only провайдер в production; сейчас таких нет), `404` (нет завершенного аудита или лида), `409 MVP_ALREADY_GENERATED` (MVP есть, а `forceRegenerate` не задан), `409 MVP_GENERATION_NOT_ALLOWED` (письмо уже в отправке или идет генерация).
+Коды ошибок `POST /mvp/generate`: `400 VALIDATION_ERROR` (неизвестный провайдер или модель другого провайдера), `400 LLM_PROVIDER_NOT_ALLOWED` (dev-only провайдер в production; сейчас таких нет), `404 NO_COMPLETED_AUDIT` / `404 LEAD_NOT_FOUND`, `409 MVP_ALREADY_GENERATED` (MVP есть, а `forceRegenerate` не задан), `409 MVP_GENERATION_NOT_ALLOWED` (письмо уже в отправке или идет генерация).
 
 Выбор аудита для генерации (REV-55): у лида может быть несколько аудитов (каждый повтор создает новый). `auditId` в запросе — id аудита или, если у дашборда его нет, id лида. Берется указанный аудит, если он `COMPLETED`, иначе самый новый `COMPLETED` аудит этого лида; `FAILED` или незавершенный аудит (без контента сайта) никогда не используется. API передает id найденного аудита в задачу `ai-gen-queue`, а AI- и deploy-воркеры загружают именно его (по тому же правилу, с проверкой `leadId`). Нет завершенного аудита — `404` в API и ошибка задачи в воркерах.
 
@@ -779,9 +813,9 @@ interface IAnalyticsEvent {
 | Метод | Эндпоинт | Описание | Body / Параметры |
 |---|---|---|---|
 | `POST` | `/discovery` | Поставить поиск в `discovery-queue` → `202 { jobId }` | `StartDiscoverySchema`: `{ provider: 'osm'\|'google', niche, location, keyword?, limit (1-100, по умолч. 20) }` |
-| `GET` | `/discovery/reverse-geocode` | Координаты браузера → `"City, Country"` через Nominatim (уровень города); `404` если не найдено, `502` при сбое Nominatim | `?lat&lng&lang` |
+| `GET` | `/discovery/reverse-geocode` | Координаты браузера → `"City, Country"` через Nominatim (уровень города); `404 PLACE_NOT_FOUND` если не найдено, `502 GEOCODING_UNAVAILABLE` при сбое Nominatim | `?lat&lng&lang` |
 | `GET` | `/discovery/:jobId` | Состояние задачи (`waiting`/`active`/`completed`/`failed`/…), параметры, кандидаты; `new`-кандидаты перепроверяются по текущим лидам | — |
-| `POST` | `/discovery/:jobId/import` | Импорт выбранных кандидатов как лидов; данные берутся только из результата задачи; `404` неизвестная задача, `409` задача не завершена | `ImportDiscoverySchema`: `{ externalIds: string[] (1-100) }` |
+| `POST` | `/discovery/:jobId/import` | Импорт выбранных кандидатов как лидов; данные берутся только из результата задачи; `404 DISCOVERY_JOB_NOT_FOUND` неизвестная задача, `409 DISCOVERY_JOB_NOT_COMPLETED` задача не завершена | `ImportDiscoverySchema`: `{ externalIds: string[] (1-100) }` |
 
 ### 5.5. Трекинг активности и аналитика (`/track`, `/health`)
 | Метод | Эндпоинт | Описание |

@@ -62,7 +62,7 @@
 * **Controllers:** Принимают `req`, вызывают методы сервиса, возвращают типизированный `res`. Запрещено помещать бизнес-логику и тяжелые вычисления в контроллеры.
 * **Services:** Содержат бизнес-логику, вызывают Mongoose-модели и пушат задачи в очереди BullMQ.
 * **DTOs & Schemas:** Для всех запросов на создание/изменение обязательны валидаторы `validateBody(CreateLeadSchema)`.
-* **Обработка ошибок:** Никогда не глушите ошибки пустым `catch {}`. Используйте глобальный обработчик `ErrorHandlerMiddleware` и кастомные классы `AppError(message, statusCode)`.
+* **Обработка ошибок:** Никогда не глушите ошибки пустым `catch {}`. Используйте глобальный обработчик `ErrorHandlerMiddleware` и `AppError(statusCode, code, message, details?)` с кодом из `API_ERROR_CODES` (`@revamp/shared-types`). Маршруты не пишут JSON ошибок сами: единый формат `{ success: false, error: { code, message, details? } }` формирует только `errorHandler` (REV-63).
 
 ### 3.3. Правила написания фронтенда (`apps/dashboard`)
 * **Стек:** React (v18+), TypeScript, Material UI (MUI v6), `@mui/x-data-grid`, TanStack Query (v5), Zustand.
