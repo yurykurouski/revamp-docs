@@ -279,7 +279,7 @@ flowchart TD
    * LLM переписывает тексты исходного сайта (`Audit.extractedContent`) в емкие, продающие офферы на **языке исходного сайта** (`outputLanguage`), сохраняя 100% фактической информации. Телефоны, e-mail и адреса LLM не выводит вовсе: они подставляются из проверенных данных.
    * Каждый запуск генерирует новые тексты; сохраненные ранее на аудите не переиспользуются.
    * Перед Zod-валидацией строки обрезаются до лимитов схемы (REV-34), поэтому одно слишком длинное поле не отбрасывает весь ответ.
-   * **Выбор провайдера и модели (REV-30, REV-32):** оператор выбирает провайдера (`anthropic`, `openai`, `gemini`, `claude-cli`, dev-only `mock`) и модель в диалоге генерации; выбор действует только на эту задачу, иначе используется значение по умолчанию воркера (`MVP_LLM_PROVIDER`, либо первый найденный API-ключ). Провайдер без ключа или с ошибкой откатывается на детерминированные тексты и **никогда** не переключается на другой платный провайдер. `MvpProject` хранит выбранные (`requestedProvider/Model`) и фактические (`provider`, `modelUsed`) значения.
+   * **Выбор провайдера и модели (REV-30, REV-32):** оператор выбирает провайдера (`anthropic`, `openai`, `gemini`, `claude-cli`) и модель в диалоге генерации; выбор действует только на эту задачу, иначе используется значение по умолчанию воркера (`MVP_LLM_PROVIDER`, либо первый найденный API-ключ). Провайдер с ошибкой вызова откатывается на детерминированные тексты и **никогда** не переключается на другой платный провайдер. Провайдер без ключа или отсутствие провайдера — ошибка задачи (REV-45). `MvpProject` хранит выбранные (`requestedProvider/Model`) и фактические (`provider`, `modelUsed`) значения.
    * **Локальный Claude Code CLI (REV-30):** провайдер `claude-cli` запускает `claude -p` в headless-режиме под аккаунтом, в который залогинен CLI (без API-ключа): без инструментов, без MCP, без пользовательских настроек, во временной рабочей папке; промпт передается через stdin.
 
 4. **Проверка полноты MVP (REV-36, REV-37):**
@@ -518,7 +518,7 @@ interface ILead {
   domain: string;                 // hostname без www, в нижнем регистре
   niche: 'dental' | 'auto' | 'legal' | 'beauty' | 'construction' | 'medical' | 'restaurant' | 'fitness' | 'other';
   city?: string;                  // улица сюда не пишется: полный адрес хранится в Audit.extractedContacts
-  contactEmail: string;           // для лидов из Discovery может быть info@<domain> с тегом email-guessed
+  contactEmail?: string;          // необязателен (REV-45): аудит берет e-mail с сайта; для Discovery может быть info@<domain> с тегом email-guessed
   contactPhone?: string;
   ownerName?: string;
   status: LeadStatus;             // см. жизненный цикл ниже
@@ -657,9 +657,9 @@ interface IMvpProject {
     error?: string;
     checkedAt: Date;
   };
-  provider?: 'anthropic' | 'openai' | 'gemini' | 'claude-cli' | 'mock' | 'deterministic'; // REV-32
+  provider?: 'anthropic' | 'openai' | 'gemini' | 'claude-cli' | 'deterministic'; // REV-32
   modelUsed?: string;
-  requestedProvider?: 'anthropic' | 'openai' | 'gemini' | 'claude-cli' | 'mock';
+  requestedProvider?: 'anthropic' | 'openai' | 'gemini' | 'claude-cli';
   requestedModel?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -722,7 +722,7 @@ interface IAnalyticsEvent {
 ### 5.1. Управление лидами и аудитами (`/leads`, `/audits`)
 | Метод | Эндпоинт | Описание | Body / Параметры |
 |---|---|---|---|
-| `POST` | `/leads` | Создать лид (`QUEUED`) и поставить аудит в очередь | `CreateLeadSchema`: `{ businessName, originalUrl, contactEmail, niche, city?, contactPhone?, ownerName? }` |
+| `POST` | `/leads` | Создать лид (`QUEUED`) и поставить аудит в очередь | `CreateLeadSchema`: `{ businessName, originalUrl, contactEmail?, niche, city?, contactPhone?, ownerName? }` (без e-mail аудит берет его с сайта, REV-45) |
 | `GET` | `/leads` | Список лидов с фильтрами и пагинацией (`pagination.total`); каждый лид несет краткую сводку полноты MVP (`completeness`). `search` ищет подстроку без учета регистра (спецсимволы экранируются). Дашборд загружает все страницы по `limit=100` (REV-43) | `?status=&niche=&complexity=&search=&page=&limit=` (`limit` ≤ 100, по умолчанию 20) |
 | `GET` | `/leads/stats` | Счетчики по всей воронке без учета фильтров списка → `{ total, byStatus }` (`ILeadStats`); источник KPI-карточек дашборда (REV-43) | — |
 | `GET` | `/leads/:id` | Детальная карточка лида + связанный аудит | — |
@@ -734,18 +734,18 @@ interface IAnalyticsEvent {
 |---|---|---|---|
 | `GET` | `/mvp/providers` | LLM-провайдеры и модели для генерации и доступность каждого по последнему отчету воркеров (REV-32) | — |
 | `POST` | `/mvp/generate` | Запуск генерации/перегенерации MVP → `202 { jobId, status: 'GENERATING' }` | `GenerateMvpSchema`: `{ auditId, forceRegenerate?, provider?, model? }` |
-| `GET` | `/mvp/:id` | Проект MVP по `_id`, `leadId`, `auditId` или `previewSlug` (с отчетом полноты) | — |
+| `GET` | `/mvp/:id` | Проект MVP по `_id`, `leadId`, `auditId` или `previewSlug` (с отчетом полноты); `404`, если MVP нет (REV-45) | — |
 | `GET` | `/mvp/preview/:slug` | Редирект на опубликованное превью с заголовками CSP / `X-Frame-Options` | — |
 | `PATCH` | `/mvp/:id/tokens` | Ручная коррекция палитры оператором | `UpdateMvpTokensSchema`: `{ primaryColor?, secondaryColor?, accentColor?, headline?, subheadline?, services? }` (сейчас сохраняется только палитра) |
 | `POST` | `/mvp/:id/rebuild` | *(план)* Пересборка статики после правок оператора | — |
 
-Коды ошибок `POST /mvp/generate`: `400` ошибка валидации (неизвестный провайдер или модель другого провайдера), `400 LLM_PROVIDER_NOT_ALLOWED` (dev-only провайдер `mock` в production), `404` (нет аудита/лида), `409 MVP_ALREADY_GENERATED` (MVP есть, а `forceRegenerate` не задан), `409 MVP_GENERATION_NOT_ALLOWED` (письмо уже в отправке или идет генерация).
+Коды ошибок `POST /mvp/generate`: `400` ошибка валидации (неизвестный провайдер или модель другого провайдера), `400 LLM_PROVIDER_NOT_ALLOWED` (dev-only провайдер в production; сейчас таких нет), `404` (нет аудита/лида), `409 MVP_ALREADY_GENERATED` (MVP есть, а `forceRegenerate` не задан), `409 MVP_GENERATION_NOT_ALLOWED` (письмо уже в отправке или идет генерация).
 
 ### 5.3. Модуль аутрича и подтверждения (HITL) (`/outreach`)
 | Метод | Эндпоинт | Описание | Body / Параметры |
 |---|---|---|---|
 | `GET` | `/outreach/pending` | Лиды, ожидающие ручного подтверждения (`NEEDS_APPROVAL`) | — |
-| `POST` | `/outreach/:id/approve`| **[HITL Action]** Одобрить: лид → `SCHEDULED`, письмо в `email-queue` с джиттером | `{ subject?, body?, preheader?, approvedBy?, scheduleTime? }` |
+| `POST` | `/outreach/:id/approve`| **[HITL Action]** Одобрить: лид → `SCHEDULED`, письмо в `email-queue` с джиттером; `409 NO_CONTACT_EMAIL`, если у лида нет e-mail (REV-45) | `{ subject?, body?, preheader?, approvedBy?, scheduleTime? }` |
 | `POST` | `/outreach/:id/reject` | Отклонить отправку (лид → `REJECTED`) | `{ reason: string }` |
 | `POST` | `/outreach/:id/test`   | Тестовое письмо на почту оператора | `{ testEmail: string }` |
 | `PUT` | `/outreach/:id/draft` | *(план)* Сохранение черновика без отправки | `{ subject, bodyHtml }` |
@@ -835,6 +835,7 @@ graph LR
 5. **`email-queue` Worker:**
    * Throttling: строго 1 письмо в 3 минуты (BullMQ limiter `max: 1, duration: 180000`).
    * Jitter: случайная задержка 15–45 секунд, рассчитываемая API при постановке задачи.
+   * Провайдер: `EMAIL_PROVIDER` (`resend`, `sendgrid` или `smtp`), значения по умолчанию нет. Без него задача отправки завершается ошибкой, а не помечает письмо отправленным (REV-45).
 
 ---
 
@@ -857,7 +858,7 @@ graph LR
    * **Discovery:** запросы к Nominatim/Overpass идут с идентифицирующим `User-Agent` и конкурентностью 1; Google Maps не парсится, используется только официальный Places API. Импорт берет данные кандидатов только из сохраненного результата задачи, а не из тела запроса, поэтому клиент не может подменить сайт или контакты.
    * **Геолокация оператора:** обратное геокодирование проксируется через API и ограничено уровнем города, чтобы не возвращать улицу оператора.
    * **Локальный Claude Code CLI:** запуск в одноходовом headless-режиме без инструментов, MCP-серверов и пользовательских/проектных настроек, во временной рабочей папке (чтобы CLI не подхватил `CLAUDE.md`/`AGENTS.md` репозитория), с таймаутом `CLAUDE_CLI_TIMEOUT_MS`.
-   * **Провайдеры LLM:** выбор оператора не переключает задачу на другой платный провайдер при сбое — только на детерминированный fallback. Dev-only провайдер `mock` отклоняется в production.
+   * **Провайдеры LLM:** выбор оператора не переключает задачу на другой платный провайдер при сбое — только на детерминированный fallback. Без настроенного провайдера генерация и Vision-критика завершаются ошибкой (REV-45).
    * **Grounding:** LLM никогда не выводит телефоны, e-mail и адреса; проверка полноты помечает выдуманные контакты как `unsourced`, а одобрение лида с критическими проблемами требует дополнительного подтверждения оператора.
 
 ---
