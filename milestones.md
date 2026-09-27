@@ -224,6 +224,7 @@ gantt
 | [**REV-62**](https://linear.app/revamp-proect/issue/REV-62) | Единый конечный автомат статусов лида: `LEAD_TRANSITIONS` + `canTransition` в `@revamp/validation`, все записи статуса атомарно проверяют таблицу; удалены недостижимые статусы (`SENT` вместо `DISPATCHED`), миграция `migrate:lead-statuses`, Kanban и чипы из общего списка | Платформа | ✅ Done |
 | [**REV-63**](https://linear.app/revamp-proect/issue/REV-63) | Единый формат ошибок API `{ success: false, error: { code, message, details? } }`: `AppError(statusCode, code, message)`, коды `API_ERROR_CODES` в `@revamp/shared-types`, ответ формирует только `errorHandler`; дашборд читает `error.code` / `error.message` (`ApiError`) | Платформа | ✅ Done |
 | [**REV-77**](https://linear.app/revamp-proect/issue/REV-77) | Ревью лида в три шага (Аудит, Прототип, Письмо) на странице `/leads/:id` вместо полноэкранного инспектора: панель действий с «Далее» / «Одобрить и отправить» и «Отклонить» на каждом шаге, одобрение только на шаге письма, правки письма сохраняются между шагами | Дашборд | ✅ Done |
+| [**REV-79**](https://linear.app/revamp-proect/issue/REV-79) | Главный экран — очередь ревью: вкладки групп «Ждут вас», «В работе», «Аутрич», «Закрыты» со счетчиками, список 380px и ревью выбранного лида рядом, автоматический выбор следующего лида после одобрения/отклонения, клавиши `J` / `K` / `Enter` | Дашборд | ✅ Done |
 
 ### Definition of Done для тикетов после релиза
 - [ ] Тикет в команде REV с разделами `Problem`, `Expected`, `Acceptance criteria` и меткой `Bug` / `Feature`.
