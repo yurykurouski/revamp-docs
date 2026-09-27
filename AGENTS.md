@@ -78,7 +78,7 @@
 * Функции для `page.evaluate()` (например, `extractSiteContentInPage`) должны быть самодостаточными: без импортов и ссылок на значения модуля. В каждом контексте установлен no-op shim `__name`, так как tsx/esbuild оборачивают вложенные функции в `__name()` (REV-21).
 * Экспоненциальный откат: для сетевых запросов и API нейросетей задавайте `{ attempts: 3, backoff: { type: 'exponential', delay: 3000..5000 } }`. Ошибки, которые повтор не исправит (нет ключа, неверная конфигурация), бросайте как `UnrecoverableError`.
 * Сбои генерации MVP после последнего ретрая обрабатывает `generation-failure.ts`: лид не должен застревать в `GENERATING`.
-* Тесты не должны вызывать реальных LLM: в окружении Vitest `MVP_LLM_PROVIDER` пустой (REV-30).
+* Тесты не должны вызывать реальных LLM: в окружении Vitest `MVP_LLM_PROVIDER` и `VISION_LLM_PROVIDER` пустые, а `CLAUDE_CLI_PATH` указывает на несуществующий файл, чтобы Vision-критика не нашла CLI (REV-30, REV-51).
 
 ---
 
@@ -88,7 +88,7 @@
 
 | Агент | Где вызывается | Модель | Статус |
 |---|---|---|---|
-| 1. Design & UX Critique | `AuditWorker` → `design-critique.service.ts` | Vision LLM (Anthropic / OpenAI) | Работает |
+| 1. Design & UX Critique | `AuditWorker` → `design-critique.service.ts` | Vision LLM (Anthropic / OpenAI / Claude Code CLI) | Работает |
 | 2. MVP Content & Copywriting | `AiWorker` → `mvp-content.service.ts` | Выбор оператора из каталога (§4.5) | Работает |
 | 3. Outreach Personalizer | — | — | Запланирован; письмо сейчас собирается шаблоном в дашборде |
 | 4. MVP Completeness Judge | `DeployWorker` → `mvp-completeness-judge.ts` | Провайдер по умолчанию воркера | Работает (REV-37) |
@@ -97,7 +97,8 @@
 
 ### Агент 1: Агент аудита дизайна (Design & UX Critique Agent)
 * **Назначение:** Оценка визуальной привлекательности первого экрана, иерархии и выявление устаревших UI-паттернов на основе скриншота.
-* **Модель:** Мультимодальная (Vision LLM: Anthropic Claude / OpenAI GPT-4o).
+* **Модель:** Мультимодальная (Vision LLM: Anthropic Claude / OpenAI GPT-4o / локальный Claude Code CLI).
+* **Выбор провайдера (REV-51):** `VISION_LLM_PROVIDER` (`anthropic` | `openai` | `claude-cli`); если пуст — ключ Anthropic, затем ключ OpenAI, затем `claude-cli`, если бинарник `CLAUDE_CLI_PATH` найден. Без провайдера аудит завершается ошибкой, критика не выдумывается (REV-45). CLI получает оба скриншота как image-блоки через `stream-json` (без инструментов, MCP, настроек и сессии), модель — `CLAUDE_CLI_MODEL`, `modelUsed` = `claude-cli:<модель>`; температуры у CLI нет, повторы просто перезапускают вызов.
 * **Параметры запуска:** температура `0.2`, затем 2 повтора с `0.0`; сжатие изображения в WebP до 1024px; на вход идут только скриншоты первого экрана (не полностраничные).
 * **Код:** `apps/workers/src/services/design-critique.service.ts` (`DESIGN_CRITIQUE_SYSTEM_PROMPT`).
 
@@ -117,7 +118,21 @@ Analysis rules:
 - List exactly 3 Quick Wins that a modern redesign would deliver.
 - Write all text in English.
 - Respond with a raw JSON object only, with no preamble and no markdown around the JSON.
+
+Output format (use exactly these keys and types):
+{
+  "visualHierarchyRating": <integer 0-100>,
+  "mobileFriendlinessRating": <integer 0-100>,
+  "primaryCtaFound": <true if a clear primary call to action is visible above the fold, else false>,
+  "datedDesignFactors": [<up to 5 short kebab-case strings, e.g. "low-contrast-typography">],
+  "criticalFlaws": [
+    { "title": "<max 80 characters>", "impact": "<max 200 characters>", "recommendation": "<max 200 characters>" }
+  ] (exactly 3 items),
+  "quickWins": ["<max 150 characters>"] (exactly 3 plain strings)
+}
 ```
+
+Блок `Output format` добавлен в REV-51: без него модель возвращала JSON своей структуры, и каждый аудит уходил в детерминированный fallback.
 
 #### Схема валидации выхода (Zod Schema):
 ```typescript
