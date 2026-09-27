@@ -231,6 +231,7 @@ gantt
 | [**REV-84**](https://linear.app/revamp-proect/issue/REV-84) | Живая смена макета MVP на шаге «Прототип»: все четыре макета в бандле, переключение в песочнице через `REVAMP_SET_LAYOUT` с анимацией View Transitions без перезагрузки iframe и без LLM; выбор сохраняется `PATCH /mvp/:id/layout` (`rule:manual`), `deploy-queue` перерисовывает опубликованный бандл | MVP | ✅ Done |
 | [**REV-65**](https://linear.app/revamp-proect/issue/REV-65) | `PATCH /mvp/:id/tokens`: `400 INVALID_ID` / `404 MVP_NOT_FOUND` без записи вместо `200`, ответ — сохраненный проект MVP; дашборд сохраняет палитру по `_id` MVP, а не лида, и показывает ошибку сохранения | MVP | ✅ Done |
 | [**REV-67**](https://linear.app/revamp-proect/issue/REV-67) | Клиент API дашборда типизирует ответы через `Serialized<T>` (`@revamp/shared-types`) от `ILead`, `IAudit`, `IMvpProject` вместо собственных копий; устаревшие поля (`url`, `score`, `contacts.*`, `lcp`, `a11yScore`, скриншоты верхнего уровня) не читаются; лид без `_id` — ошибка «Malformed server response», а не случайный id | Платформа | ✅ Done |
+| [**REV-88**](https://linear.app/revamp-proect/issue/REV-88) | Плавающая панель «Инструменты дизайна» поверх превью MVP: цвет бренда и макет в одной перетаскиваемой панели (в пределах вьюпорта на всех ширинах, стрелки и Home с клавиатуры, сворачивание, положение на сессию) вместо статичной строки над iframe | MVP | ✅ Done |
 
 ### Definition of Done для тикетов после релиза
 - [ ] Тикет в команде REV с разделами `Problem`, `Expected`, `Acceptance criteria` и меткой `Bug` / `Feature`.
