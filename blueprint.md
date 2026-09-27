@@ -748,7 +748,7 @@ interface IAnalyticsEvent {
 | HTTP | `code` | Когда |
 |---|---|---|
 | `400` | `VALIDATION_ERROR` | Тело, query или params не прошли Zod-схему; `message` — первая ошибка (`path: message`), `details.issues` — все ошибки Zod |
-| `400` | `INVALID_ID` | Неверный ObjectId (Mongoose `CastError` или проверка в маршрутах `/outreach`) |
+| `400` | `INVALID_ID` | Неверный ObjectId (Mongoose `CastError` или проверка в маршрутах `/outreach` и `PATCH /mvp/:id/tokens`) |
 | `400` | `INVALID_JSON` | Тело запроса — невалидный JSON |
 | `413` | `PAYLOAD_TOO_LARGE` | Тело больше лимита `express.json` (10 МБ) |
 | `409` | `DUPLICATE` | Нарушение уникального индекса MongoDB (код `11000`) |
@@ -762,7 +762,7 @@ interface IAnalyticsEvent {
 | `404` | `NO_COMPLETED_AUDIT` | `POST /mvp/generate`: у лида нет завершенного аудита |
 | `409` | `MVP_GENERATION_NOT_ALLOWED` | `POST /mvp/generate`: статус лида не позволяет генерацию или лид изменился во время постановки; `details.status` |
 | `409` | `MVP_ALREADY_GENERATED` | `POST /mvp/generate`: MVP уже есть, а `forceRegenerate` не задан; `details.status` |
-| `404` | `MVP_NOT_FOUND` | `GET /mvp/:id` |
+| `404` | `MVP_NOT_FOUND` | `GET /mvp/:id`, `PATCH /mvp/:id/tokens` |
 | `404` | `PREVIEW_NOT_FOUND` | `GET /mvp/preview/:slug` |
 | `409` | `LEAD_NOT_AWAITING_APPROVAL` | `POST /outreach/:id/approve`: лид не в `NEEDS_APPROVAL` |
 | `409` | `LEAD_NOT_REJECTABLE` | `POST /outreach/:id/reject`: outreach уже одобрен или лид закрыт |
@@ -794,7 +794,7 @@ interface IAnalyticsEvent {
 | `POST` | `/mvp/generate` | Запуск генерации/перегенерации MVP → `202 { jobId, status: 'GENERATING' }` | `GenerateMvpSchema`: `{ auditId, forceRegenerate?, provider?, model? }` |
 | `GET` | `/mvp/:id` | Проект MVP по `_id`, `leadId`, `auditId` или `previewSlug` (с отчетом полноты); `404 MVP_NOT_FOUND`, если MVP нет (REV-45) | — |
 | `GET` | `/mvp/preview/:slug` | Редирект на опубликованное превью с заголовками CSP / `X-Frame-Options`; `404 PREVIEW_NOT_FOUND`, если превью нет | — |
-| `PATCH` | `/mvp/:id/tokens` | Ручная коррекция палитры оператором | `UpdateMvpTokensSchema`: `{ primaryColor?, secondaryColor?, accentColor?, headline?, subheadline?, services? }` (сейчас сохраняется только палитра) |
+| `PATCH` | `/mvp/:id/tokens` | Ручная коррекция палитры оператором по `_id` проекта MVP (не лида): записываются только переданные цвета, ответ — сохраненный проект MVP; `400 INVALID_ID` для неверного id, `404 MVP_NOT_FOUND` для неизвестного, в обоих случаях ничего не записывается (REV-65). Опубликованный MVP не пересобирается | `UpdateMvpTokensSchema`: `{ primaryColor?, secondaryColor?, accentColor?, headline?, subheadline?, services? }` (сейчас сохраняется только палитра) |
 | `POST` | `/mvp/:id/rebuild` | *(план)* Пересборка статики после правок оператора | — |
 
 Коды ошибок `POST /mvp/generate`: `400 VALIDATION_ERROR` (неизвестный провайдер или модель другого провайдера), `400 LLM_PROVIDER_NOT_ALLOWED` (dev-only провайдер в production; сейчас таких нет), `404 NO_COMPLETED_AUDIT` / `404 LEAD_NOT_FOUND`, `409 MVP_ALREADY_GENERATED` (MVP есть, а `forceRegenerate` не задан), `409 MVP_GENERATION_NOT_ALLOWED` (письмо уже в отправке или идет генерация).
