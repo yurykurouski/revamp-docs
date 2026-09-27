@@ -232,7 +232,7 @@ flowchart TD
    * Промпт требует вернуть строго структурированный JSON с оценкой дизайна по 10 эвристикам Нильсена и усиленным маркетинговым УТП.
    * Ответ валидируется через `ZodSchema.parse()`.
 3. Воркер `DeployWorker` компилирует адаптивный лендинг на Tailwind CSS с блоками *Header, Hero, Bento Grid услуг, Reviews, Booking Form*, инжектирует трекер `revamp-tracker.js` и публикует страницу по адресу `https://preview.revamp.io/v/dent-art-spb-8a2f`.
-4. Создается черновик письма в коллекции `email_campaigns` со статусом `NEEDS_APPROVAL`. Лид переходит в статус `AWAITING_APPROVAL`.
+4. Создается черновик письма в коллекции `email_campaigns` со статусом `NEEDS_APPROVAL`. Лид переходит в статус `NEEDS_APPROVAL`.
 
 ### Этап 4: Пользовательский интерфейс оператора (HITL Approval Gate)
 1. В React-дашборде карточка клиники автоматически перемещается в колонку **«На ревью [!]»**.

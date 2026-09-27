@@ -301,7 +301,7 @@ flowchart TD
    * Автоматический снимок созданного лендинга через Playwright для формирования баннера «До/После» (Split-screen Comparison, 1200x630).
 
 6. **Перегенерация (REV-31):**
-   * Правила `mvpGenerationMode` (`@revamp/validation`): из `AUDITED` — первая генерация; из `MVP_READY`, `NEEDS_APPROVAL`, `AWAITING_APPROVAL`, `APPROVED` — только с `forceRegenerate`; после постановки письма в отправку (`SCHEDULED` и далее) и во время генерации — запрещено (409).
+   * Правила `mvpGenerationMode` (`@revamp/validation`): из `AUDITED` — первая генерация; из `NEEDS_APPROVAL` — только с `forceRegenerate`; после постановки письма в отправку (`SCHEDULED` и далее) и во время генерации — запрещено (409).
    * Существующий проект сохраняет `previewSlug`: объекты в бакете перезаписываются (`Cache-Control: no-cache`), уже отправленная ссылка остается рабочей. `MvpProject` один на лид; обновляются `generatedAt` и `generationCount`, а превью в дашборде сбрасывает кэш по `Lead.mvpGeneratedAt`.
    * Лид остается в `GENERATING`, пока деплой не опубликует новое превью. После исчерпания ретраев лид возвращается в `AUDITED` (первая генерация) или `NEEDS_APPROVAL` (предыдущий MVP цел), а причина пишется в `Lead.generationError`.
    * Дашборд (REV-53): `MvpPreviewFrame` закрывает превью оверлеем от клика «Перегенерировать» до загрузки новой версии в iframe. Мутация генерации имеет ключ `['generate-mvp']` и остается в ожидании, пока список лидов не покажет `GENERATING` (`useIsMvpGenerationPending`), поэтому разрыва между кликом и оверлеем нет. Если URL превью не изменился (сбой), оверлей снимается сразу, а если новая версия не загрузилась, то через 20 с. `sandbox` iframe не меняется.
@@ -403,7 +403,7 @@ sequenceDiagram
    * Кнопка «Перегенерировать MVP» с подтверждением и выбором провайдера/модели (REV-31, REV-32).
    * Если критическое поле MVP отсутствует, изменено или выдумано, одобрение требует дополнительного подтверждения (REV-36).
    * Большая акцентная кнопка «Подтвердить и отправить» (`Ctrl/Cmd + Enter`).
-4. **Карточки Kanban:** кнопки «Сгенерировать MVP» (для `AUDITED`) и «Перегенерировать MVP» (для `NEEDS_APPROVAL`, `MVP_READY`, `AWAITING_APPROVAL`, `APPROVED`), чип «Пробелы в данных» при критических проблемах полноты, текст последней ошибки генерации (`generationError`). Для `AUDIT_FAILED`: чип «Аудит не удался» с причиной, кнопки «Повторить аудит» и «Отклонить» (REV-44).
+4. **Карточки Kanban:** кнопки «Сгенерировать MVP» (для `AUDITED`) и «Перегенерировать MVP» (для `NEEDS_APPROVAL`), чип «Пробелы в данных» при критических проблемах полноты, текст последней ошибки генерации (`generationError`). Для `AUDIT_FAILED`: чип «Аудит не удался» с причиной, кнопки «Повторить аудит» и «Отклонить» (REV-44).
 5. **Поиск бизнесов (`DiscoveryModal` + `DiscoveryReview`, REV-27…REV-29):** кнопка в хедере открывает форму (провайдер, ниша, локация с автоопределением, ключевое слово, лимит). После отправки модалка опрашивает задачу; ее можно свернуть кнопкой «Выполнять в фоне»; тогда кнопка в хедере (`DiscoveryButton`, REV-40) сама опрашивает задачу через общий `discoveryStatusQueryOptions` и показывает спиннер, бейдж с числом новых бизнесов или ошибку, пока оператор не откроет результат (`useDiscoveryStore.resultsSeen`). Окно поиска и `DiscoveryFinishWatcher` смонтированы в `Layout`, поэтому задача отслеживается на любой странице; при завершении задачи в фоне `DiscoveryFinishWatcher` показывает уведомление (новые бизнесы / ничего нового / ошибка), клик по которому открывает окно (REV-41, один раз на задачу через `notifiedJobId`). По завершении показывается таблица кандидатов с предвыбранными новыми бизнесами, переключателем «Показать пропущенные» и итогом импорта.
 6. **Аналитический дашборд:**
    * Конверсионная воронка (Аудиты -> Отправлено -> Открыто -> Переходов на MVP -> Ответы).
@@ -545,30 +545,37 @@ interface ILead {
 
 ```mermaid
 stateDiagram-v2
-    [*] --> QUEUED: POST /leads, импорт из Discovery, POST /audits/trigger
+    [*] --> QUEUED: POST /leads, импорт из Discovery
     QUEUED --> AUDITING: audit worker
     AUDITING --> AUDITED: аудит завершен
     AUDITING --> AUDIT_FAILED: последняя попытка или постоянная ошибка (DNS, сертификат)
     AUDIT_FAILED --> QUEUED: «Повторить аудит» (POST /audits/trigger)
-    AUDIT_FAILED --> REJECTED: отклонение оператором
     AUDITED --> GENERATING: авто-цепочка или «Сгенерировать MVP»
-    GENERATING --> NEEDS_APPROVAL: deploy worker опубликовал превью
+    GENERATING --> NEEDS_APPROVAL: deploy worker опубликовал превью / сбой перегенерации (старый MVP цел)
     GENERATING --> AUDITED: сбой первой генерации
-    GENERATING --> NEEDS_APPROVAL: сбой перегенерации (старый MVP цел)
     NEEDS_APPROVAL --> GENERATING: «Перегенерировать MVP» (forceRegenerate)
     NEEDS_APPROVAL --> SCHEDULED: HITL-аппрув оператором
-    NEEDS_APPROVAL --> REJECTED: отклонение оператором
     SCHEDULED --> SENT: email worker
+    SCHEDULED --> REJECTED: MX-проверка домена не прошла (email worker)
     SENT --> OPENED: пиксель
+    SENT --> CLICKED: клик-редирект
+    SENT --> ENGAGED: dwell time / CTA в демо
     OPENED --> CLICKED: клик-редирект
+    OPENED --> ENGAGED: dwell time / CTA в демо
     CLICKED --> ENGAGED: dwell time / CTA в демо
-    SENT --> UNSUBSCRIBED: POST /track/unsubscribe/:token
-    OPENED --> UNSUBSCRIBED: POST /track/unsubscribe/:token
-    CLICKED --> UNSUBSCRIBED: POST /track/unsubscribe/:token
-    ENGAGED --> UNSUBSCRIBED: POST /track/unsubscribe/:token
+    note right of REJECTED
+        Оператор отклоняет лид из QUEUED, AUDITING,
+        AUDIT_FAILED, AUDITED, GENERATING, NEEDS_APPROVAL
+    end note
+    note right of ENGAGED
+        UNSUBSCRIBED: из любого статуса
+        (POST /track/unsubscribe/:token), финальный
+    end note
 ```
 
-`UNSUBSCRIBED` выставляет только `POST /track/unsubscribe/:token` (REV-73), из любого статуса после отправки; одобрение и email worker такому лиду отказывают. Статусы `PENDING`, `MVP_READY`, `AWAITING_APPROVAL`, `APPROVED`, `DISPATCHED`, `REPLIED` остаются в типе `LeadStatus` для совместимости и группируются дашбордом с соседними колонками Kanban, но воркеры их не выставляют.
+Диаграмма повторяет таблицу `LEAD_TRANSITIONS` из `@revamp/validation` (REV-62): `canTransition(from, to)` и `leadStatusesInto(to)` используют все места, где меняется статус лида (маршруты API, трекинг, воркеры аудита, генерации, деплоя и отправки), обычно как атомарный фильтр `findOneAndUpdate({ _id, status: { $in: leadStatusesInto(to) } })`. Повтор задачи BullMQ может заново выставить тот же статус (`includeSelf`), но устаревшая задача или поздний трекинг никогда не переводят лид назад: аудит пропускает лид, который уже не в `QUEUED`; воркер генерации пропускает лид, который не может перейти в `GENERATING`; deploy worker переводит в `NEEDS_APPROVAL` только лид в `GENERATING`; `SENT` и отказ по MX не перезаписывают отписку, пришедшую во время отправки.
+
+`UNSUBSCRIBED` выставляет только `POST /track/unsubscribe/:token` (REV-73); одобрение и email worker такому лиду отказывают. Статусы `PENDING`, `MVP_READY`, `AWAITING_APPROVAL`, `APPROVED`, `DISPATCHED`, `REPLIED` удалены из `LeadStatus` (REV-62); `npm run migrate:lead-statuses --workspace=@revamp/api` переводит сохраненные лиды: `PENDING` → `QUEUED`, `MVP_READY`/`AWAITING_APPROVAL`/`APPROVED` → `NEEDS_APPROVAL`, `DISPATCHED` → `SENT`, `REPLIED` → `ENGAGED`. Дашборд относит каждый статус к колонке Kanban в `apps/dashboard/src/utils/leadStages.ts`.
 
 #### 2. `audits`
 ```typescript
@@ -742,7 +749,7 @@ interface IAnalyticsEvent {
 | `GET` | `/leads` | Список лидов с фильтрами и пагинацией (`pagination.total`); каждый лид несет краткую сводку полноты MVP (`completeness`). `search` ищет подстроку без учета регистра (спецсимволы экранируются). Дашборд загружает все страницы по `limit=100` (REV-43) | `?status=&niche=&complexity=&search=&page=&limit=` (`limit` ≤ 100, по умолчанию 20) |
 | `GET` | `/leads/stats` | Счетчики по всей воронке без учета фильтров списка → `{ total, byStatus }` (`ILeadStats`); источник KPI-карточек дашборда (REV-43) | — |
 | `GET` | `/leads/:id` | Детальная карточка лида + связанный аудит | — |
-| `POST` | `/audits/trigger` | Принудительный перезапуск аудита (новый документ `Audit`) | `{ leadId }` |
+| `POST` | `/audits/trigger` | Перезапуск аудита (новый документ `Audit`) для лида в `QUEUED` или `AUDIT_FAILED` (→ `QUEUED`); иначе `409 LEAD_NOT_AUDITABLE` (REV-62) | `{ leadId }` |
 | `GET` | `/audits/:id` | Результаты аудита, метрики, ссылки на скриншоты | — |
 
 ### 5.2. Модуль генерации MVP (`/mvp`)
@@ -763,8 +770,8 @@ interface IAnalyticsEvent {
 | Метод | Эндпоинт | Описание | Body / Параметры |
 |---|---|---|---|
 | `GET` | `/outreach/pending` | Лиды, ожидающие ручного подтверждения (`NEEDS_APPROVAL`) | — |
-| `POST` | `/outreach/:id/approve`| **[HITL Action]** Одобрить: лид → `SCHEDULED`, письмо в `email-queue` с джиттером. Только из `NEEDS_APPROVAL`/`AWAITING_APPROVAL`, атомарно (`findOneAndUpdate` с фильтром статуса); иначе `409 LEAD_NOT_AWAITING_APPROVAL` (REV-59). `409 NO_CONTACT_EMAIL`, если у лида нет e-mail (REV-45); `404 LEAD_NOT_FOUND`. Дашборд присылает черновик в том виде, как его показывает превью, с подставленными переменными (REV-72). `body` — простой текст: он сохраняется в `bodyPlainText`, а в `bodyHtml` — экранированный HTML с абзацами, переносами строк и скрытым preheader (`draftToHtml` из `@revamp/shared-types`, та же функция, что у тестовой отправки). `subject` (1–300 символов) и `body` (1–20000) обязательны, текста по умолчанию нет: без них `400` и ничего не меняется (REV-61) | `{ subject, body, preheader?, approvedBy?, scheduleTime? }` |
-| `POST` | `/outreach/:id/reject` | Отклонить отправку (лид → `REJECTED`). Только до одобрения, атомарно; для `APPROVED`, `SCHEDULED` и далее, `REJECTED`, `UNSUBSCRIBED` — `409 LEAD_NOT_REJECTABLE` (REV-59); `404 LEAD_NOT_FOUND` | `{ reason: string }` |
+| `POST` | `/outreach/:id/approve`| **[HITL Action]** Одобрить: лид → `SCHEDULED`, письмо в `email-queue` с джиттером. Только из `NEEDS_APPROVAL`, атомарно (`findOneAndUpdate` с фильтром статуса); иначе `409 LEAD_NOT_AWAITING_APPROVAL` (REV-59). `409 NO_CONTACT_EMAIL`, если у лида нет e-mail (REV-45); `404 LEAD_NOT_FOUND`. Дашборд присылает черновик в том виде, как его показывает превью, с подставленными переменными (REV-72). `body` — простой текст: он сохраняется в `bodyPlainText`, а в `bodyHtml` — экранированный HTML с абзацами, переносами строк и скрытым preheader (`draftToHtml` из `@revamp/shared-types`, та же функция, что у тестовой отправки). `subject` (1–300 символов) и `body` (1–20000) обязательны, текста по умолчанию нет: без них `400` и ничего не меняется (REV-61) | `{ subject, body, preheader?, approvedBy?, scheduleTime? }` |
+| `POST` | `/outreach/:id/reject` | Отклонить отправку (лид → `REJECTED`). Только до одобрения, атомарно; для `SCHEDULED` и далее, `REJECTED`, `UNSUBSCRIBED` — `409 LEAD_NOT_REJECTABLE` (REV-59); `404 LEAD_NOT_FOUND` | `{ reason: string }` |
 | `POST` | `/outreach/:id/test`   | Отправляет текущий черновик (как в превью, с подставленными переменными) на почту оператора через `email-test-queue` и ждёт результата воркера до 30 с (REV-60). Не проходит HITL-гейт, не добавляет пиксель открытий и не меняет лид и `EmailCampaign`. `200` с `{ to, messageId, provider, sentAt }`; `503 EMAIL_PROVIDER_NOT_CONFIGURED`, если `EMAIL_PROVIDER` не задан в API или у воркеров; `502 EMAIL_SEND_FAILED` при ошибке провайдера; `504 EMAIL_TEST_TIMEOUT`, если воркеры не ответили (ожидающая задача удаляется); `404 LEAD_NOT_FOUND`; `400` для неверного id или тела | `{ testEmail, subject, body, preheader? }` |
 | `PUT` | `/outreach/:id/draft` | *(план)* Сохранение черновика без отправки | `{ subject, bodyHtml }` |
 
