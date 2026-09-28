@@ -483,6 +483,7 @@ erDiagram
         string requestedModel
         Date generatedAt
         number generationCount
+        Date editedAt
         boolean isPublished
     }
 
@@ -663,6 +664,7 @@ interface IMvpProject {
   isPublished: boolean;
   generatedAt?: Date;             // REV-31
   generationCount?: number;       // REV-31
+  editedAt?: Date;                // REV-85: последнее изменение своими словами, опубликованное заново
   layout?: {                      // REV-54; нет у MVP, созданных до REV-54 (Bento)
     variant: 'bento' | 'split' | 'editorial' | 'compact';
     reasons: string[];            // коды причин выбора: 'rule:image_rich', 'niche:dental', 'images:8'
@@ -769,6 +771,9 @@ interface IAnalyticsEvent {
 | `404` | `MVP_NOT_FOUND` | `GET /mvp/:id`, `PATCH /mvp/:id/tokens`, `PATCH /mvp/:id/layout` |
 | `409` | `MVP_LAYOUT_CHANGE_NOT_ALLOWED` | `PATCH /mvp/:id/layout`: лид не в `NEEDS_APPROVAL` (идет генерация или аутрич уже запланирован/отправлен); `details.status` (REV-84) |
 | `409` | `MVP_PALETTE_CHANGE_NOT_ALLOWED` | `PATCH /mvp/:id/tokens`: лид не в `NEEDS_APPROVAL` (идет генерация или аутрич уже запланирован/отправлен); `details.status` (REV-90) |
+| `409` | `MVP_EDIT_NOT_ALLOWED` | `POST /mvp/:id/edit`: лид не в `NEEDS_APPROVAL`; `details.status` (REV-85) |
+| `502` | `MVP_EDIT_FAILED` | `POST /mvp/:id/edit`: изменение не применено — провайдер LLM не настроен или вернул ошибку, ответ не прошел Zod или Strict Grounding; `message` содержит причину (REV-85) |
+| `504` | `MVP_EDIT_TIMEOUT` | `POST /mvp/:id/edit`: воркеры не ответили за 150 с; поздний ответ не применяется (REV-85) |
 | `404` | `PREVIEW_NOT_FOUND` | `GET /mvp/preview/:slug` |
 | `409` | `LEAD_NOT_AWAITING_APPROVAL` | `POST /outreach/:id/approve`: лид не в `NEEDS_APPROVAL` |
 | `409` | `LEAD_NOT_REJECTABLE` | `POST /outreach/:id/reject`: outreach уже одобрен или лид закрыт |
@@ -814,6 +819,7 @@ interface IAnalyticsEvent {
 | `GET` | `/outreach/pending` | Лиды, ожидающие ручного подтверждения (`NEEDS_APPROVAL`) | — |
 | `POST` | `/outreach/:id/approve`| **[HITL Action]** Одобрить: лид → `SCHEDULED`, письмо в `email-queue` с джиттером. Только из `NEEDS_APPROVAL`, атомарно (`findOneAndUpdate` с фильтром статуса); иначе `409 LEAD_NOT_AWAITING_APPROVAL` (REV-59). `409 NO_CONTACT_EMAIL`, если у лида нет e-mail (REV-45); `404 LEAD_NOT_FOUND`. Дашборд присылает черновик в том виде, как его показывает превью, с подставленными переменными (REV-72). `body` — простой текст: он сохраняется в `bodyPlainText`, а в `bodyHtml` — экранированный HTML с абзацами, переносами строк и скрытым preheader (`draftToHtml` из `@revamp/shared-types`, та же функция, что у тестовой отправки). `subject` (1–300 символов) и `body` (1–20000) обязательны, текста по умолчанию нет: без них `400` и ничего не меняется (REV-61) | `{ subject, body, preheader?, approvedBy?, scheduleTime? }` |
 | `POST` | `/outreach/:id/reject` | Отклонить отправку (лид → `REJECTED`). Только до одобрения, атомарно; для `SCHEDULED` и далее, `REJECTED`, `UNSUBSCRIBED` — `409 LEAD_NOT_REJECTABLE` (REV-59); `404 LEAD_NOT_FOUND` | `{ reason: string }` |
+| `POST` | `/mvp/:id/edit` | Изменение MVP своими словами (REV-85) по `_id` проекта MVP: ставит задачу в `mvp-edit-queue` и ждет результата до 150 с. Воркер спрашивает LLM-агента правок, проверяет ответ (Zod и Strict Grounding), сохраняет только измененные тексты / цвет (`primary` и `accent`) / макет (`rule:manual`) и `editedAt`, затем перерисовывает опубликованный бандл. `200 { applied, summary, changes: ('content' \| 'palette' \| 'layout')[], mvp }` (при `applied: false` ничего не записано, `summary` — причина). `400 INVALID_ID`, `404 MVP_NOT_FOUND` / `LEAD_NOT_FOUND`, `409 MVP_EDIT_NOT_ALLOWED`, `502 MVP_EDIT_FAILED`, `504 MVP_EDIT_TIMEOUT`. Статус лида не меняется | `EditMvpSchema`: `{ instruction: string (3–500, trim) }` |
 | `POST` | `/outreach/:id/test`   | Отправляет текущий черновик (как в превью, с подставленными переменными) на почту оператора через `email-test-queue` и ждёт результата воркера до 30 с (REV-60). Не проходит HITL-гейт, не добавляет пиксель открытий и не меняет лид и `EmailCampaign`. `200` с `{ to, messageId, provider, sentAt }`; `503 EMAIL_PROVIDER_NOT_CONFIGURED`, если `EMAIL_PROVIDER` не задан в API или у воркеров; `502 EMAIL_SEND_FAILED` при ошибке провайдера; `504 EMAIL_TEST_TIMEOUT`, если воркеры не ответили (ожидающая задача удаляется); `404 LEAD_NOT_FOUND`; `400` для неверного id или тела | `{ testEmail, subject, body, preheader? }` |
 | `PUT` | `/outreach/:id/draft` | *(план)* Сохранение черновика без отправки | `{ subject, bodyHtml }` |
 
@@ -837,7 +843,7 @@ interface IAnalyticsEvent {
 | `GET` | `/health` | Проверка доступности API, MongoDB и Redis: `200` (`status: "ok"`), когда MongoDB `connected` и Redis `ready`/`connect`; иначе `503` с тем же телом (`status: "degraded"`, в `services` — фактические статусы), чтобы Docker `HEALTHCHECK` (`curl -f`) перезапускал контейнер без БД (REV-66) |
 | `GET` | `/analytics/overview` | *(план)* Метрики воронки, open rate, CTR, средний скоринг |
 
-**Завершение работы API (REV-66):** по `SIGTERM`/`SIGINT` сервер перестаёт принимать запросы и сразу закрывает простаивающие keep-alive сокеты; незавершённые запросы получают 5 с, после чего соединения закрываются принудительно. Затем закрываются очереди BullMQ (и `QueueEvents` тестовых писем), соединение Redis и MongoDB, процесс завершается с кодом `0`. Если шаг зависает, через 8 с (меньше 10 с по умолчанию у `docker stop`) процесс завершается с кодом `1`.
+**Завершение работы API (REV-66):** по `SIGTERM`/`SIGINT` сервер перестаёт принимать запросы и сразу закрывает простаивающие keep-alive сокеты; незавершённые запросы получают 5 с, после чего соединения закрываются принудительно. Затем закрываются очереди BullMQ (и `QueueEvents` тестовых писем и изменений MVP, REV-85), соединение Redis и MongoDB, процесс завершается с кодом `0`. Если шаг зависает, через 8 с (меньше 10 с по умолчанию у `docker stop`) процесс завершается с кодом `1`.
 
 **CORS для `/track/*` (REV-52):** кроме `CORS_ORIGIN` дашборда, разрешены origin хранилища MVP (`S3_ENDPOINT` локально) и `https://{PREVIEW_DOMAIN}`. `navigator.sendBeacon` всегда отправляет запрос с `credentials: include`, поэтому ответ содержит `Access-Control-Allow-Credentials: true` при явном списке origin (не `*`). Остальные маршруты API доступны только `CORS_ORIGIN`.
 
@@ -864,6 +870,7 @@ graph LR
         Q_Deploy[(deploy-queue)]
         Q_Mail[(email-queue)]
         Q_Test[(email-test-queue)]
+        Q_Edit[(mvp-edit-queue)]
     end
 
     subgraph Workers_Pool [Node.js Workers]
@@ -873,6 +880,7 @@ graph LR
         W3[Deploy Worker<br/>Concurrency: 5]
         W4[Email Dispatcher<br/>Concurrency: 1, 1 письмо / 180 с]
         W5[Email Test Sender<br/>Concurrency: 1, без лимита]
+        W6[MVP Edit Worker<br/>Concurrency: 2]
     end
 
     API_Disc --> Q_Disc --> W0
@@ -890,6 +898,7 @@ graph LR
     API_Approve --> Q_Mail
     Q_Mail --> W4
     HITL -->|Тест себе| Q_Test --> W5
+    HITL -->|Изменение своими словами| Q_Edit --> W6
 ```
 
 ### Настройки воркеров:
@@ -920,6 +929,10 @@ graph LR
    * Тестовая отправка черновика оператору. Отдельная очередь, чтобы тест не ждал лимита аутрича и не задерживал его: concurrency `1`, без limiter, 1 попытка без ретраев (оператор ждёт ответа).
    * Тот же `emailService` и провайдер, что у `email-queue`, но без HITL-гейта, MX-проверки и пикселя открытий (`trackOpens: false`); тема с префиксом `[Test]`. Лид и `EmailCampaign` не читаются и не меняются.
    * API ждёт результата через `QueueEvents` до 30 с. Без провайдера задача падает с `EMAIL_PROVIDER_NOT_CONFIGURED`, и API отвечает `503`.
+7. **`mvp-edit-queue` Worker (REV-85):**
+   * Изменение MVP своими словами: concurrency `2`, 1 попытка без ретраев (оператор ждёт ответа), API ждёт результата через `QueueEvents` до 150 с.
+   * `MvpEditService` (агент 5 в `AGENTS.md`) получает инструкцию, контекст генерации (`buildGroundingContext`), текущие тексты, цвет и макет, допустимые цвета (текущий, цвета бренда из аудита, `MVP_COLOR_PRESETS`) и макеты. Ответ проходит `MvpEditOutputSchema`, затем код отклоняет числа, e-mail и ссылки, которых нет в `buildGroundingCorpus` и текущих текстах, и цвет вне списка; тексты дополнительно проходят `enforceStrictGrounding`. Любое нарушение — ошибка задачи без записи.
+   * Записываются только измененные части и `editedAt`; затем воркер сам вызывает `republishSavedMvp` (тот же путь, что `relayout-mvp`) и отвечает после выгрузки, чтобы дашборд перезагрузил превью. Задача несет `deadline`: после ухода API по таймауту изменение не применяется; лид, покинувший `NEEDS_APPROVAL` за время ответа модели, тоже.
 
 ---
 

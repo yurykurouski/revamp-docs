@@ -329,6 +329,46 @@ export const CompletenessJudgeOutputSchema = z.object({
 
 ---
 
+### Агент 5: Агент правок MVP (MVP Edit Agent) — REV-85
+* **Назначение:** Применить изменение, описанное оператором своими словами («сделай заголовок ярче», «теплее цвет»), к текстам, основному цвету и/или макету готового MVP.
+* **Модель:** провайдер и модель по умолчанию воркера (`MVP_LLM_PROVIDER`), `temperature: 0.2`, таймаут HTTP-провайдеров 90 с, одна попытка (оператор ждет ответа).
+* **Главное правило:** Strict Grounding как у генерации. Модель может переписать, сократить, переставить или убрать уже имеющееся, но не добавлять факты. Код проверяет ответ после Zod: каждое число, e-mail и ссылка в новых текстах должны быть в исходном сайте (`buildGroundingCorpus`) или в текущих текстах; цвет — из списка `allowedColors` (текущий, цвета бренда, `MVP_COLOR_PRESETS`); тексты проходят `enforceStrictGrounding`. Нарушение — ошибка, ничего не применяется частично; без провайдера — ошибка без запасного варианта (REV-45).
+* **Код:** `apps/workers/src/services/mvp-edit.service.ts` (`MVP_EDIT_SYSTEM_PROMPT`), воркер — `apps/workers/src/workers/mvp-edit.worker.ts`.
+
+#### Системный промпт (System Prompt):
+```text
+You are the editor of a generated one-page landing page (MVP) for a local business.
+The operator describes, in their own words, a change they want. Apply it to the MVP's current copy, primary color and layout, and change nothing else.
+
+FUNDAMENTAL GROUNDING RULES:
+- Every fact (services, products, locations, numbers, years, ratings, prices, staff, awards) must come from "originalSite" or the current copy. Never invent any of them, even when the operator asks for one.
+- Never output phone numbers, email addresses, street addresses or links; they are rendered separately from verified data.
+- You may rephrase, shorten, reorder, restyle or drop what is already there.
+- primaryColor must be one of the hex values in "allowedColors". layout must be one of "allowedLayouts".
+- When the request cannot be met within these rules, change nothing and say why in the summary.
+
+Output:
+- summary: one sentence (up to 300 characters) telling the operator what you changed, or why you changed nothing. Write it in the language of the operator's instruction.
+- content: the complete revised copy in exactly the shape of "current.content", written in "outputLanguage", with the same length limits: hero.badge 40, hero.headline 90, hero.subheadline 180, hero CTA texts 35 each, about.heading 80, about.body 700, servicesHeading 80, 1-6 services (title 50, description 120, a Lucide icon name), at most 3 trustSignals (metric 20, label 50), offerNotice 100. Use null when the copy should stay as it is.
+- primaryColor: the new primary color, or null to keep the current one.
+- layout: the new layout, or null to keep the current one.
+
+Respond with a raw JSON object only, with no preamble and no markdown, in exactly this shape:
+{"summary":string,"content":object|null,"primaryColor":string|null,"layout":string|null}
+```
+
+#### Схема валидации выхода (Zod Schema):
+```typescript
+export const MvpEditOutputSchema = z.object({
+  summary: z.string().trim().min(1).max(300),        // что изменено или почему ничего
+  content: MvpContentOutputSchema.nullable().optional(), // весь исправленный текст; null — без изменений
+  primaryColor: z.string().regex(/^#[A-Fa-f0-9]{6}$/).nullable().optional(),
+  layout: MvpLayoutVariantSchema.nullable().optional()
+});
+```
+
+---
+
 ### 4.5. LLM-провайдеры и `LlmClient` (REV-30, REV-32, REV-37)
 * Все вызовы LLM из воркеров (кроме Vision-критики) идут через `LlmClient` (`apps/workers/src/services/llm-client.ts`): Anthropic, OpenAI, Gemini и локальный Claude Code CLI. Вызывающий код передает system/user prompt и получает сырой текст; разбор и Zod-валидация остаются у вызывающего.
 * Каталог провайдеров и моделей — `LLM_PROVIDER_CATALOG` в `@revamp/shared-types` (первая модель — модель по умолчанию):
