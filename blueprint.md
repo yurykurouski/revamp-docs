@@ -228,6 +228,9 @@ flowchart TD
      - Наличие корректного Viewport мета-тега, HTTPS сертификата, фавикона, robots.txt, sitemap.xml.
      - Состояние микроразметки (Schema.org / OpenGraph / Twitter Cards).
      - Скорость загрузки и размер тяжелых неоптимизированных ассетов (PNG > 2MB, некэшируемые скрипты).
+   * **Текущая реализация (REV-99):** Lighthouse пока не запускается (решение — REV-102). `VitalsService` снимает метрики в мобильном контексте Playwright (375×812, без троттлинга) через `PerformanceObserver` с `buffered: true` (`performance.getEntriesByType` не отдаёт записи LCP и `layout-shift` в Chromium):
+     - LCP — `startTime` последней записи `largest-contentful-paint`, в мс. Если записи нет, LCP не подменяется FCP или временем ответа — это ошибка измерения.
+     - CLS — наибольшее окно сессии Core Web Vitals (сдвиги с разрывом < 1 с, окно ≤ 5 с) без сдвигов с `hadRecentInput` (Chromium помечает так и сдвиги первых ~500 мс после навигации); считается в `VitalsService.calculateCls`.
 
 4. **Мультимодальный AI-анализ дизайна (Vision UX/UI Critique):**
    * Скриншоты отправляются в Vision LLM со специализированным системным промптом:
