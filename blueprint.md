@@ -152,6 +152,8 @@ sequenceDiagram
 
 Оператору предлагается не больше `limit` новых бизнесов; пропущенные показываются с причиной.
 
+**Повторный поиск без проверенных (REV-107).** `IDiscoveryJobData.excludeDomains` — домены, которые прошлые поиски уже предложили и проверили (до `DISCOVERY_MAX_EXCLUDED_DOMAINS` = 1000). `runDiscovery` после `classify` убирает листинги с этими доменами до сверки с лидами и оценки сайта, не засчитывает их в `limit` (поиск листает дальше) и возвращает их число в `IDiscoveryJobResult.skippedChecked`; перезапрос учитывает их (`maxResults = min((limit + исключено) × 3, 300)`). Дашборд (`searchAgainInput` в `useDiscovery.ts`) строит следующий поиск из параметров задачи: прошлые `excludeDomains` плюс домены предложенных кандидатов, новейшие 1000.
+
 #### 0.2a. Предварительная оценка сайтов (REV-98)
 Перед возвратом результата `runDiscovery` вызывает `assessCandidates` (`apps/workers/src/services/site-assessment.service.ts`) для каждого предложенного `new` кандидата: пул из `DISCOVERY_ASSESS_CONCURRENCY` (6) параллельных проверок, каждая с таймаутом `DISCOVERY_ASSESS_TIMEOUT_MS` (8000 мс).
 
@@ -864,7 +866,7 @@ interface IAnalyticsEvent {
 ### 5.4. Поиск локальных бизнесов (`/discovery`) — REV-26…REV-29
 | Метод | Эндпоинт | Описание | Body / Параметры |
 |---|---|---|---|
-| `POST` | `/discovery` | Поставить поиск в `discovery-queue` → `202 { jobId }` | `StartDiscoverySchema`: `{ provider: 'osm'\|'google', niche, location, keyword?, limit (1-100, по умолч. 20) }` |
+| `POST` | `/discovery` | Поставить поиск в `discovery-queue` → `202 { jobId }` | `StartDiscoverySchema`: `{ provider: 'osm'\|'google', niche, location, keyword?, limit (1-100, по умолч. 20), excludeDomains? (до 1000 доменов, REV-107) }` |
 | `GET` | `/discovery/reverse-geocode` | Координаты браузера → `"City, Country"` через Nominatim (уровень города); `404 PLACE_NOT_FOUND` если не найдено, `502 GEOCODING_UNAVAILABLE` при сбое Nominatim | `?lat&lng&lang` |
 | `GET` | `/discovery/:jobId` | Состояние задачи (`waiting`/`active`/`completed`/`failed`/…), параметры, кандидаты; `new`-кандидаты перепроверяются по текущим лидам | — |
 | `POST` | `/discovery/:jobId/import` | Импорт выбранных кандидатов как лидов; данные берутся только из результата задачи; `404 DISCOVERY_JOB_NOT_FOUND` неизвестная задача, `409 DISCOVERY_JOB_NOT_COMPLETED` задача не завершена | `ImportDiscoverySchema`: `{ externalIds: string[] (1-100) }` |
