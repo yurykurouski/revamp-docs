@@ -616,7 +616,8 @@ interface IAudit {
   status: 'QUEUED' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
   // 0-100; неизмеренный критерий отсутствует, total взвешен по измеренным (REV-100); design нет при шаблонной критике (REV-101)
   scores: { total: number; design?: number; accessibility?: number; performance?: number; standards?: number };
-  lighthouseMetrics: { lcp?: number; fidOrInp?: number; cls?: number; speedIndex?: number };
+  // Только измеренные в странице LCP (мс) и CLS; Speed Index и INP не хранятся — headless-загрузка их не измеряет (REV-105)
+  lighthouseMetrics: { lcp?: number; cls?: number };
   // Измерения, которые не удалось снять, и причина; их значения в документе отсутствуют (REV-100)
   measurementErrors?: Array<{ measurement: 'performance' | 'accessibility' | 'standards' | 'design'; message: string }>;
   a11ySummary?: {                  // отсутствует, если сканирование axe не удалось
