@@ -239,12 +239,12 @@ flowchart TD
      - Заметность и привлекательность основного CTA (Call to Action).
      - Эффект «устаревшего сайта» (Dated Design Smell: градиенты 2010-х, неадаптивные таблицы, перегруженные меню).
      - Формирование списка из 3 критических UX-проблем и 3 очевидных точек роста (Quick Wins).
-   * **Провайдеры Vision (REV-51):** `VISION_LLM_PROVIDER` (`anthropic`, `openai`, `claude-cli`) или, если он пуст, по порядку: ключ Anthropic, ключ OpenAI, локальный Claude Code CLI (если `CLAUDE_CLI_PATH` найден). CLI получает оба скриншота первого экрана (mobile и desktop WebP) как image-блоки одного сообщения через `--input-format stream-json` / `--output-format stream-json` с теми же ограничениями, что и для текста: без инструментов, MCP, настроек и сохранения сессии, во временной рабочей папке. `modelUsed` = `claude-cli:<CLAUDE_CLI_MODEL>`, токены берутся из события `result` CLI (включая кэшированный ввод). Без доступного провайдера аудит завершается ошибкой (REV-45); детерминированная критика применяется только после 3 неудачных реальных вызовов (`aiFallbackUsed: true`, событие `token_usage` не пишется).
+   * **Провайдеры Vision (REV-51):** `VISION_LLM_PROVIDER` (`anthropic`, `openai`, `claude-cli`) или, если он пуст, по порядку: ключ Anthropic, ключ OpenAI, локальный Claude Code CLI (если `CLAUDE_CLI_PATH` найден). CLI получает оба скриншота первого экрана (mobile и desktop WebP) как image-блоки одного сообщения через `--input-format stream-json` / `--output-format stream-json` с теми же ограничениями, что и для текста: без инструментов, MCP, настроек и сохранения сессии, во временной рабочей папке. `modelUsed` = `claude-cli:<CLAUDE_CLI_MODEL>`, токены берутся из события `result` CLI (включая кэшированный ввод). Без доступного провайдера аудит завершается ошибкой (REV-45); детерминированная критика применяется только после 3 неудачных реальных вызовов (`aiFallbackUsed: true`, событие `token_usage` не пишется); она не оценивается: критерий дизайна исключается из итоговой оценки, а в `Audit.measurementErrors` пишется `design` с причиной (REV-101).
 
 #### 1.2. Структура скоринга (Composite Score Formula):
 $$\text{Total Score} = 0.35 \times S_{\text{Design/UX}} + 0.25 \times S_{\text{Performance}} + 0.20 \times S_{\text{Accessibility}} + 0.20 \times S_{\text{Standards/SEO}}$$
 
-Каждый критерий нормализуется от 0 до 100. **Частичная оценка (REV-100):** если детерминированное измерение не удалось (производительность, доступность или стандарты), его критерий не заполняется ни нулём, ни подставным значением, а исключается из формулы; веса оставшихся критериев масштабируются до суммы 1 (например, без производительности: $\text{Total} = (0.35 S_{D} + 0.20 S_{A} + 0.20 S_{S}) / 0.75$). Причина сохраняется в `Audit.measurementErrors`, дашборд показывает её на шаге «Аудит», а письмо не упоминает неизмеренную метрику.
+Каждый критерий нормализуется от 0 до 100. **Частичная оценка (REV-100):** если детерминированное измерение не удалось (производительность, доступность или стандарты), его критерий не заполняется ни нулём, ни подставным значением, а исключается из формулы; веса оставшихся критериев масштабируются до суммы 1 (например, без производительности: $\text{Total} = (0.35 S_{D} + 0.20 S_{A} + 0.20 S_{S}) / 0.75$). Причина сохраняется в `Audit.measurementErrors`, дашборд показывает её на шаге «Аудит», а письмо не упоминает неизмеренную метрику. Шаблонная критика дизайна (сбой Vision-модели) тоже считается неизмеренным критерием `design` (REV-101); если не измерен ни один критерий, аудит завершается ошибкой.
 
 При оценке ниже 60 система генерирует конкретные продающие тезисы для холодного письма (например: *"Ваш мобильный сайт теряет до 45% клиентов из-за медленного LCP 4.8s и нечитаемого шрифта на смартфонах"*).
 
@@ -612,11 +612,11 @@ interface IAudit {
   _id: Types.ObjectId;
   leadId: Types.ObjectId;         // повторный аудит создает новый документ; воркер пишет в самый свежий
   status: 'QUEUED' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
-  // 0-100; неизмеренный критерий отсутствует, total взвешен по измеренным (REV-100)
-  scores: { total: number; design: number; accessibility?: number; performance?: number; standards?: number };
+  // 0-100; неизмеренный критерий отсутствует, total взвешен по измеренным (REV-100); design нет при шаблонной критике (REV-101)
+  scores: { total: number; design?: number; accessibility?: number; performance?: number; standards?: number };
   lighthouseMetrics: { lcp?: number; fidOrInp?: number; cls?: number; speedIndex?: number };
   // Измерения, которые не удалось снять, и причина; их значения в документе отсутствуют (REV-100)
-  measurementErrors?: Array<{ measurement: 'performance' | 'accessibility' | 'standards'; message: string }>;
+  measurementErrors?: Array<{ measurement: 'performance' | 'accessibility' | 'standards' | 'design'; message: string }>;
   a11ySummary?: {                  // отсутствует, если сканирование axe не удалось
     violationsCount: number;
     contrastIssuesCount: number;
