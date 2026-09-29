@@ -244,7 +244,9 @@ flowchart TD
 #### 1.2. Структура скоринга (Composite Score Formula):
 $$\text{Total Score} = 0.35 \times S_{\text{Design/UX}} + 0.25 \times S_{\text{Performance}} + 0.20 \times S_{\text{Accessibility}} + 0.20 \times S_{\text{Standards/SEO}}$$
 
-Каждый критерий нормализуется от 0 до 100. При оценке ниже 60 система генерирует конкретные продающие тезисы для холодного письма (например: *"Ваш мобильный сайт теряет до 45% клиентов из-за медленного LCP 4.8s и нечитаемого шрифта на смартфонах"*).
+Каждый критерий нормализуется от 0 до 100. **Частичная оценка (REV-100):** если детерминированное измерение не удалось (производительность, доступность или стандарты), его критерий не заполняется ни нулём, ни подставным значением, а исключается из формулы; веса оставшихся критериев масштабируются до суммы 1 (например, без производительности: $\text{Total} = (0.35 S_{D} + 0.20 S_{A} + 0.20 S_{S}) / 0.75$). Причина сохраняется в `Audit.measurementErrors`, дашборд показывает её на шаге «Аудит», а письмо не упоминает неизмеренную метрику.
+
+При оценке ниже 60 система генерирует конкретные продающие тезисы для холодного письма (например: *"Ваш мобильный сайт теряет до 45% клиентов из-за медленного LCP 4.8s и нечитаемого шрифта на смартфонах"*).
 
 ---
 
@@ -475,6 +477,7 @@ erDiagram
         object scores
         object lighthouseMetrics
         object a11ySummary
+        array measurementErrors
         object designCritique
         object extractedBrandTokens
         object extractedContacts
@@ -609,9 +612,12 @@ interface IAudit {
   _id: Types.ObjectId;
   leadId: Types.ObjectId;         // повторный аудит создает новый документ; воркер пишет в самый свежий
   status: 'QUEUED' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
-  scores: { total: number; design: number; accessibility: number; performance: number; standards: number }; // 0-100
-  lighthouseMetrics: { lcp: number; fidOrInp?: number; cls: number; speedIndex?: number };
-  a11ySummary: {
+  // 0-100; неизмеренный критерий отсутствует, total взвешен по измеренным (REV-100)
+  scores: { total: number; design: number; accessibility?: number; performance?: number; standards?: number };
+  lighthouseMetrics: { lcp?: number; fidOrInp?: number; cls?: number; speedIndex?: number };
+  // Измерения, которые не удалось снять, и причина; их значения в документе отсутствуют (REV-100)
+  measurementErrors?: Array<{ measurement: 'performance' | 'accessibility' | 'standards'; message: string }>;
+  a11ySummary?: {                  // отсутствует, если сканирование axe не удалось
     violationsCount: number;
     contrastIssuesCount: number;
     missingAltCount: number;
