@@ -57,6 +57,7 @@ flowchart LR
 * **День 5 (Axe-core & Lighthouse):**
   - Инжекция `@axe-core/puppeteer`: фиксация нарушений WCAG 2.1 AA (контрастность, теги `alt`, лейблы форм).
   - Lighthouse мобильный профиль: замер LCP, CLS, проверка SSL и мобильного Viewport.
+    *REV-102: Lighthouse не запускается (research.md, ADR 11) — LCP и CLS снимаются в странице (`Audit.webVitals`); стандарты проверяют HTTPS, viewport, title, фавикон, Schema.org и OpenGraph; нарушения axe-core хранятся в аудите.*
 * **День 6–7 (Vision LLM & Скоринг):**
   - Интеграция Claude 3.5 Sonnet / GPT-4o: отправка мобильного скриншота, промпт на выявление 3 критических багов и 3 Quick Wins.
   - Валидация ответа через схему Zod.

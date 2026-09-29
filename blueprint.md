@@ -230,9 +230,11 @@ flowchart TD
      - Наличие корректного Viewport мета-тега, HTTPS сертификата, фавикона, robots.txt, sitemap.xml.
      - Состояние микроразметки (Schema.org / OpenGraph / Twitter Cards).
      - Скорость загрузки и размер тяжелых неоптимизированных ассетов (PNG > 2MB, некэшируемые скрипты).
-   * **Текущая реализация (REV-99):** Lighthouse пока не запускается (решение — REV-102). `VitalsService` снимает метрики в мобильном контексте Playwright (375×812, без троттлинга) через `PerformanceObserver` с `buffered: true` (`performance.getEntriesByType` не отдаёт записи LCP и `layout-shift` в Chromium):
+   * **Реализация (REV-99, REV-102):** Lighthouse не запускается (research.md, ADR 11); метрики хранятся в `Audit.webVitals`. `VitalsService` снимает метрики в мобильном контексте Playwright (375×812, без троттлинга) через `PerformanceObserver` с `buffered: true` (`performance.getEntriesByType` не отдаёт записи LCP и `layout-shift` в Chromium):
      - LCP — `startTime` последней записи `largest-contentful-paint`, в мс. Если записи нет, LCP не подменяется FCP или временем ответа — это ошибка измерения.
      - CLS — наибольшее окно сессии Core Web Vitals (сдвиги с разрывом < 1 с, окно ≤ 5 с) без сдвигов с `hadRecentInput` (Chromium помечает так и сдвиги первых ~500 мс после навигации); считается в `VitalsService.calculateCls`.
+     - Стандарты (REV-102) — HTTPS, viewport, title, фавикон (иконка в `<link>` или `/favicon.ico` через `page.request`, 3 с), Schema.org (JSON-LD с `@type` или микроданные) и OpenGraph; баллы `STANDARDS_POINTS` (30/30/10/10/10/10), результат — `Audit.standardsChecks`.
+     - Нарушения axe-core сохраняются в `Audit.axeViolations` (`AxeService.toStoredViolations`: селектор и HTML до 300 символов, `failureSummary` до 500, до 20 узлов на правило, `nodeCount` — полное число).
 
 4. **Мультимодальный AI-анализ дизайна (Vision UX/UI Critique):**
    * Скриншоты отправляются в Vision LLM со специализированным системным промптом:
@@ -477,8 +479,10 @@ erDiagram
         ObjectId leadId FK
         string status
         object scores
-        object lighthouseMetrics
+        object webVitals
+        object standardsChecks
         object a11ySummary
+        array axeViolations
         array measurementErrors
         object designCritique
         object extractedBrandTokens
@@ -617,7 +621,9 @@ interface IAudit {
   // 0-100; неизмеренный критерий отсутствует, total взвешен по измеренным (REV-100); design нет при шаблонной критике (REV-101)
   scores: { total: number; design?: number; accessibility?: number; performance?: number; standards?: number };
   // Только измеренные в странице LCP (мс) и CLS; Speed Index и INP не хранятся — headless-загрузка их не измеряет (REV-105)
-  lighthouseMetrics: { lcp?: number; cls?: number };
+  webVitals: { lcp?: number; cls?: number };     // до REV-102 — lighthouseMetrics (migrate:audit-vitals)
+  // Проверки стандартов (REV-102); отсутствуют, если страницу не удалось прочитать
+  standardsChecks?: { https: boolean; viewport: boolean; title: boolean; favicon: boolean; structuredData: boolean; openGraph: boolean };
   // Измерения, которые не удалось снять, и причина; их значения в документе отсутствуют (REV-100)
   measurementErrors?: Array<{ measurement: 'performance' | 'accessibility' | 'standards' | 'design'; message: string }>;
   a11ySummary?: {                  // отсутствует, если сканирование axe не удалось
@@ -626,6 +632,11 @@ interface IAudit {
     missingAltCount: number;
     criticalViolations: Array<{ id: string; description: string; impact?: string; selector: string }>;
   };
+  // Все нарушения axe-core с усечением (REV-102); отсутствуют, если сканирование не удалось
+  axeViolations?: Array<{
+    id: string; impact?: string; description: string; help: string; helpUrl: string; tags: string[];
+    nodeCount: number; nodes: Array<{ target: string; html: string; failureSummary?: string }>;
+  }>;
   designCritique: {
     visualHierarchyRating: number;
     mobileFriendlinessRating: number;
