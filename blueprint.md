@@ -662,6 +662,8 @@ interface IAudit {
     density: 'compact' | 'comfortable' | 'airy';
   };
   siteLayoutError?: string;       // REV-104: почему структуру не удалось прочитать; тогда макет выбирают правила
+  siteSections?: Mixed;           // REV-109: главная страница по секциям, из DOM (SiteSectionsSchema, лимиты SITE_SECTIONS_LIMITS): sections[{ index, role: header|hero|content|footer, kind, arrangement, columns?, mediaSide?, intro, items[{ title?, subtitle?, text[], image?, price?, rating? (0..5), links[] }], itemStyle?, extra[], images[], embeds[], style, truncated? }], typography?, skipped[{ index, reason: noise|empty|duplicate|cap, heading?, sample }], coverage{ pageChars, capturedChars, ratio, uncaptured[] }
+  siteSectionsError?: string;     // REV-109: почему секции не удалось прочитать; аудит при этом не падает
   extractedContacts?: {           // REV-23: детерминированно с исходного сайта
     phone?: string; email?: string; address?: string; workingHours?: string;
     socialLinks: Array<{ platform: string; url: string }>;
