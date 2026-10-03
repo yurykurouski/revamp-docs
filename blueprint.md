@@ -244,6 +244,7 @@ flowchart TD
      - Эффект «устаревшего сайта» (Dated Design Smell: градиенты 2010-х, неадаптивные таблицы, перегруженные меню).
      - Формирование списка из 3 критических UX-проблем и 3 очевидных точек роста (Quick Wins).
    * **Провайдеры Vision (REV-51):** `VISION_LLM_PROVIDER` (`anthropic`, `openai`, `claude-cli`) или, если он пуст, по порядку: ключ Anthropic, ключ OpenAI, локальный Claude Code CLI (если `CLAUDE_CLI_PATH` найден). CLI получает оба скриншота первого экрана (mobile и desktop WebP) как image-блоки одного сообщения через `--input-format stream-json` / `--output-format stream-json` с теми же ограничениями, что и для текста: без инструментов, MCP, настроек и сохранения сессии, во временной рабочей папке. `modelUsed` = `claude-cli:<CLAUDE_CLI_MODEL>`, токены берутся из события `result` CLI (включая кэшированный ввод). Без доступного провайдера аудит завершается ошибкой (REV-45); детерминированная критика применяется только после 3 неудачных реальных вызовов (`aiFallbackUsed: true`, событие `token_usage` не пишется); она не оценивается: критерий дизайна исключается из итоговой оценки, а в `Audit.measurementErrors` пишется `design` с причиной (REV-101).
+   * **Группировка секций (REV-113):** параллельно с критикой тот же класс провайдеров (`VISION_LLM_PROVIDER`, иначе `MVP_LLM_PROVIDER`, первый ключ, CLI) через `LlmClient` получает контур страницы (до 600 пронумерованных кусков) и до 6 тайлов полного desktop-скриншота 1440×1800 и отвечает только id (`SiteGroupingAnswerSchema`). `readPageSections` собирает секции по id и сохраняет их в `Audit.siteSections` с `source: 'llm'`; при любом сбое — чтение правилами REV-109 (`source: 'rules'`) и `measurementErrors` `sections`. Токены — событие `token_usage` со стадией `audit_section_grouping`.
 
 #### 1.2. Структура скоринга (Composite Score Formula):
 $$\text{Total Score} = 0.35 \times S_{\text{Design/UX}} + 0.25 \times S_{\text{Performance}} + 0.20 \times S_{\text{Accessibility}} + 0.20 \times S_{\text{Standards/SEO}}$$
@@ -627,7 +628,7 @@ interface IAudit {
   // Проверки стандартов (REV-102); отсутствуют, если страницу не удалось прочитать
   standardsChecks?: { https: boolean; viewport: boolean; title: boolean; favicon: boolean; structuredData: boolean; openGraph: boolean };
   // Измерения, которые не удалось снять, и причина; их значения в документе отсутствуют (REV-100)
-  measurementErrors?: Array<{ measurement: 'performance' | 'accessibility' | 'standards' | 'design'; message: string }>;
+  measurementErrors?: Array<{ measurement: 'performance' | 'accessibility' | 'standards' | 'design' | 'sections'; message: string }>; // sections (REV-113): секции прочитаны правилами вместо Vision-модели, не оценивается
   a11ySummary?: {                  // отсутствует, если сканирование axe не удалось
     violationsCount: number;
     contrastIssuesCount: number;
@@ -663,7 +664,7 @@ interface IAudit {
     density: 'compact' | 'comfortable' | 'airy';
   };
   siteLayoutError?: string;       // REV-104: почему структуру не удалось прочитать; тогда макет выбирают правила
-  siteSections?: Mixed;           // REV-109: главная страница по секциям, из DOM (SiteSectionsSchema, лимиты SITE_SECTIONS_LIMITS): sections[{ index, role: header|hero|content|footer, kind, arrangement, columns?, mediaSide?, intro, items[{ title?, subtitle?, text[], image?, backgroundImage? (REV-110: фон-фото карточки или слайда), price?, rating? (0..5), links[] }], itemStyle?, extra[], images[], embeds[], style, truncated? }], typography?, skipped[{ index, reason: noise|empty|duplicate|cap, heading?, sample }], coverage{ pageChars, capturedChars, ratio, uncaptured[] }
+  siteSections?: Mixed;           // REV-109: главная страница по секциям, из DOM (SiteSectionsSchema, лимиты SITE_SECTIONS_LIMITS): sections[{ index, role: header|hero|content|footer, kind, arrangement, columns?, mediaSide?, intro, items[{ title?, subtitle?, text[], image?, backgroundImage? (REV-110: фон-фото карточки или слайда), price?, rating? (0..5), links[] }], itemStyle?, extra[], images[], embeds[], style, truncated? }], typography?, skipped[{ index, reason: noise|empty|duplicate|cap|unassigned (REV-113), heading?, sample }], coverage{ pageChars, capturedChars, ratio, uncaptured[] }, source?: rules|llm (REV-113: кто прочитал — правила DOM или Vision-модель по id)
   siteSectionsError?: string;     // REV-109: почему секции не удалось прочитать; аудит при этом не падает
   extractedContacts?: {           // REV-23: детерминированно с исходного сайта
     phone?: string; email?: string; address?: string; workingHours?: string;

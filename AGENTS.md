@@ -92,6 +92,7 @@
 | 2. MVP Content & Copywriting | `AiWorker` → `mvp-content.service.ts` | Выбор оператора из каталога (§4.5) | Работает |
 | 3. Outreach Personalizer | — | — | Запланирован; письмо сейчас собирается шаблоном в дашборде |
 | 4. MVP Completeness Judge | `DeployWorker` → `mvp-completeness-judge.ts` | Провайдер по умолчанию воркера | Работает (REV-37) |
+| 6. Section Grouping | `AuditWorker` → `site-grouping.service.ts` (`readPageSections`) | Vision через `LlmClient` (`VISION_LLM_PROVIDER`, иначе провайдер по умолчанию, иначе CLI) | Работает (REV-113), только id |
 
 ---
 
@@ -373,10 +374,82 @@ export const MvpEditOutputSchema = z.object({
 
 Для того, что словарь не выражает, агент может вернуть `design.customCss` (REV-93): промпт перечисляет разрешенные хуки и классы (`MVP_CSS_HOOKS`) и правила, и требует предпочитать токены. `sanitizeMvpCss` проверяет CSS в коде; нарушение отклоняет все изменение целиком, а слишком длинный CSS (больше 4 КБ) не обрезается, а отклоняется.
 
+### Агент 6: Агент группировки секций (Section Grouping Agent) — REV-113
+* **Назначение:** Разбить главную страницу оригинала на шапку, секции и подвал там, где правила читателя REV-109 не справляются (табличные и конструкторские верстки), чтобы MVP перестраивал страницу (REV-110), а не уходил в Bento (`rebuild:flat`, REV-112).
+* **Главное правило:** модель может группировать и классифицировать куски страницы только по id; она никогда не пишет текст или разметку. В схеме ответа нет строковых полей, неизвестные ключи отбрасываются, а весь текст, ссылки и фото копируются со страницы по id (`assembleGroupedBlocks`).
+* **Вход:** контур страницы `RawPageOutline` (`collectSiteSectionsInPage` → `outline`, до 600 кусков `OUTLINE_LIMITS.pieces` в порядке документа): заголовки (`h1`–`h6` или «стилевые» — строка 1–120 знаков одна в строке, жирная, ≥ 1,2× основного кегля или прописная), текст, разрезанный по `<br>` и границам блоков, списки, строки ссылок, фото от 40 px, фоновые фото от 200×100, встраивания; у каждого — рамка, шрифт, фон, `hidden` для сохраненного скрытого текста и `slide` для куска на слайде. Связанные карточки (`<a>` вокруг заголовка и абзацев) читаются как заголовки и текст, форма на всю страницу (ASP.NET) — как страница, клоны слайдов не читаются. Промпт показывает первые 160 знаков текста; плюс до 6 тайлов desktop-скриншота 1440×1800 (`ImageService.tilesForVision`, WebP 1024 px), ниша и URL.
+* **Модель:** `VISION_LLM_PROVIDER`, иначе `MVP_LLM_PROVIDER`, иначе первый ключ API, иначе локальный CLI, через `LlmClient` с картинками (Anthropic `image`, OpenAI `image_url`, Gemini `inline_data`, CLI stream-json). `temperature` 0.1, потом 0; 2 попытки; `maxTokens` 8000; таймаут HTTP 120 с; во второй попытке модели сообщают, почему первый ответ отклонен.
+* **Бюджет (замер на claude-cli sonnet):** anident.pl ≈ 12k входа / 0,6k выхода, falcodent.pl ≈ 19,5k / 1,2k; верхняя граница ≈ 25k входа и 4k выхода на вызов. Событие `token_usage` со стадией `audit_section_grouping`. Вызов идет параллельно с критикой дизайна.
+* **Проверка ответа** (`checkGrouping`): известные id, каждый не больше одного раза, у каждой секции заголовок — кусок `heading` или `text` до 120 знаков, логотип — `image`, хотя бы одна секция. Сборка: слайдер получает по элементу на слайд того слайдера, где текст (начиная со слайда на экране), галерея без элементов — по элементу на фото; затем `readSiteSections(raw, [], 'llm')` чистит, ограничивает, считает покрытие и валидирует `SiteSectionsSchema`. Куски, которые модель никуда не положила, — `skipped` с причиной `unassigned`, они не считаются захваченными.
+* **Fallback** (`readPageSections`): если провайдер не настроен, вызов упал, ответ дважды невалиден, сборка упала или чтение модели не проходит `rebuildEligibility`, когда чтение правилами проходит, — сохраняется чтение правилами (`source: 'rules'`), а причина пишется в `Audit.measurementErrors` как `sections` (не оценивается, дашборд показывает ее отдельной строкой). Аудит из-за группировки не падает.
+* **Код:** `apps/workers/src/services/site-grouping.service.ts` (`SITE_GROUPING_SYSTEM_PROMPT`, `SiteGroupingService`, `readPageSections`), `site-grouping.ts` (`checkGrouping`, `assembleGroupedBlocks`, `readGroupedSections`, `outlinePrompt`); проверка на реальных сайтах — `npx tsx scripts/read_site_sections.ts --llm <url>`, запись ответов для тестов — `--record <dir>`. Тесты используют только записанные ответы.
+
+#### Системный промпт (System Prompt):
+```text
+You organise a business's home page into sections. You never write text.
+
+Inputs: screenshots of the desktop page (1440px wide) in order, each with its page range, and an outline:
+one line per numbered piece of the page (heading, text, list, links, image, background, embed) with its
+font size, bold (b), position (y = px from the top of the page, x) and size, and the start of its text.
+"styled" headings are short bold, large or uppercase lines that are not HTML headings. "hidden" pieces are
+kept page text that is not shown until clicked (an accordion answer, a tab). "slide=S.N" marks a piece on
+slide N of slider S; slides other than the current one sit outside the screenshots (x beyond the page width).
+
+Group the pieces as a visitor sees the page:
+- header: the logo image (logo) and the menu and top-bar pieces (pieces).
+- sections, in page order: each starts at its heading and holds every piece that belongs to that heading
+  until the next section: its text, lists, buttons and the photos shown with it. A photo floated beside or
+  between paragraphs belongs to that paragraph's section, never to a separate gallery.
+- heading: the section's main title. A short label right above a larger title (a small "O NAS" over
+  "Poznaj nasz gabinet") is the eyebrow, and the larger title is the heading.
+- a box with its own heading (a "Questions? Write to us" box beside a text, a contact form with a title)
+  is its own section, not part of the text next to it.
+- items, only for repeated cards or entries (services, people, reviews, questions): each item's title id and pieces.
+- a slider (pieces marked slide=S.N) is one section with arrangement slider; its heading is the first slide's
+  heading and its pieces are every piece of every slide (the slides become its items).
+- a gallery of photos is one section with arrangement gallery; its photos go in its pieces.
+- footer: the pieces at the bottom (address, hours, links, copyright).
+- kind, one of: services, pricing, gallery, about, team, reviews, faq, contact, map, features, other.
+- arrangement, how the section shows its content, one of: banner, media-beside-text, text, card-grid, list,
+  accordion, tabs, slider, gallery, embed.
+
+Rules:
+- Use only ids from the outline. Use each id at most once in the whole answer: a piece that is a section's
+  heading or an item's title is not listed again in pieces.
+- Every section needs a heading id: a heading piece, or a text piece of at most 120 characters that reads
+  as a title. Never an image, a list, links or a longer text: when a block has no such title, add it to
+  the section before it.
+- Place every piece that is part of the page, including link lists inside sections (they are the page's
+  own copy). Leave a piece out only when it is not content: a second copy of the header menu (for example a
+  hidden mobile menu with the same links), a hit counter, an empty spacer.
+- Respond with one raw JSON object, no prose, no markdown:
+{"header":{"logo":<id>,"pieces":[<id>...]},"sections":[{"heading":<id>,"eyebrow":<id, optional>,"pieces":[<id>...],
+"items":[{"title":<id>,"pieces":[<id>...]}] (optional),"kind":"<kind>","arrangement":"<arrangement>"}],"footer":{"pieces":[<id>...]}}
+```
+
+#### Схема валидации выхода (Zod Schema):
+```typescript
+const pieceId = z.number().int().min(1).max(OUTLINE_LIMITS.pieces);
+const pieceIds = z.array(pieceId).max(OUTLINE_LIMITS.pieces);
+
+export const SiteGroupingAnswerSchema = z.object({
+  header: z.object({ logo: pieceId.optional(), pieces: pieceIds }).optional(),
+  sections: z.array(z.object({
+    heading: pieceId,
+    eyebrow: pieceId.optional(),
+    pieces: pieceIds,
+    items: z.array(z.object({ title: pieceId.optional(), pieces: pieceIds })).max(OUTLINE_LIMITS.items).optional(),
+    kind: z.enum(SITE_SECTION_KINDS),
+    arrangement: z.enum(SITE_SECTION_ARRANGEMENTS),
+  })).min(1).max(OUTLINE_LIMITS.sections),
+  footer: z.object({ pieces: pieceIds }).optional(),
+}); // ни одного строкового поля: текст модели не может попасть в чтение
+```
+
 ---
 
 ### 4.5. LLM-провайдеры и `LlmClient` (REV-30, REV-32, REV-37)
-* Все вызовы LLM из воркеров (кроме Vision-критики) идут через `LlmClient` (`apps/workers/src/services/llm-client.ts`): Anthropic, OpenAI, Gemini и локальный Claude Code CLI. Вызывающий код передает system/user prompt и получает сырой текст; разбор и Zod-валидация остаются у вызывающего.
+* Все вызовы LLM из воркеров (кроме Vision-критики) идут через `LlmClient`; с REV-113 он принимает картинки (`images`) и возвращает расход токенов (`completeWithUsage`) — так работает группировка секций (Агент 6) (`apps/workers/src/services/llm-client.ts`): Anthropic, OpenAI, Gemini и локальный Claude Code CLI. Вызывающий код передает system/user prompt и получает сырой текст; разбор и Zod-валидация остаются у вызывающего.
 * Каталог провайдеров и моделей — `LLM_PROVIDER_CATALOG` в `@revamp/shared-types` (первая модель — модель по умолчанию):
 
 | Провайдер | Модели | Особенности |
@@ -402,6 +475,7 @@ export const MvpEditOutputSchema = z.object({
      - Письмо собирается по статическому шаблону в дашборде.
      - В базу выставляется флаг `aiFallbackUsed: true`, `MvpProject.provider = 'deterministic'`, а в дашборде оператора отображается, кто написал тексты.
    * Критика дизайна (`DesignCritiqueAgent`) после 3 неудачных вызовов заменяется шаблоном, который не оценивается: критерий дизайна выпадает из итоговой оценки, в `Audit.measurementErrors` пишется `design` с причиной, а дашборд помечает критику как шаблон (REV-101).
+   * Группировка секций (Агент 6) при сбое, невалидном ответе или чтении хуже правил по воротам перестройки откатывается на чтение правилами REV-109; в `Audit.measurementErrors` пишется `sections` с причиной (REV-113).
    * Судья полноты (Агент 4) при сбое откатывается на сравнение только кодом; отчет сохраняет `method`, `model` и `llmError`.
 2. **Защита конфиденциальности (Data Privacy):**
    * Запрещено передавать в промпты нейросетей персональные пароли, сессионные куки или внутренние ключи доступа.
