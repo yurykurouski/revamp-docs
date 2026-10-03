@@ -483,6 +483,27 @@ export const RebuildEditOutputSchema = z.object({
 });
 ```
 
+### Агент 8: Агент модернизации перестройки (Rebuild Modernize Agent) — REV-114
+* **Назначение:** Выбрать современный вид перестройки устаревшего сайта (уровень `modern`): первый экран из `h1` и фото, фото на всю колонку с чередованием сторон, карточки из серий коротких абзацев и списков, фоны и шкалу шрифтов. Работает как арт-директор: решает только расположение и стиль секций, которые уже есть на странице.
+* **Модель:** провайдер копирайтинга по умолчанию (`MVP_LLM_PROVIDER`, локально `claude-cli`) через `LlmClient`, только текст — без скриншотов, `temperature: 0.2`, таймаут `EDIT_LLM_TIMEOUT_MS`, не больше двух попыток. Вызывается один раз на аудит при первой отрисовке на уровне `modern` (генерация или первое переключение оператором) и не вызывается, если `rebuildEligibility` не проходит.
+* **Главное правило:** модель ничего не удаляет, не скрывает и не переставляет и не пишет текст страницы — ни заголовков, ни фраз, ни подписей, ни чисел, ни контактов, ни ссылок. Ответ содержит только id из контура страницы и фиксированные значения. Вход — `page` (контур `buildRebuildOutline`, дополненный для каждой секции полями `arrangeAs` — какие расположения подходят ее содержимому — и `photoBeside`), `brandColors` (цвета самого сайта) и `start` — разумный вид по умолчанию (`defaultModernDesign`), который модель оставляет как есть или меняет только где страница этого требует. Промпт `REBUILD_MODERNIZE_SYSTEM_PROMPT` строится из тех же констант, что и схема: `hero { photo, style }` (фото — id вида `s-<i>.m<n>` из `images` следующих секций, только если у первой секции нет своего фото; `banner` — для фото не уже `REBUILD_BANNER_MIN_WIDTH` = 1000 px), `sections[id]` (`arrangement` только из `arrangeAs`, `mediaSide` и `media` только для секции с `photoBeside`, `background`, `align`, `density`), `theme` (`typeScale`, `font`, `density`, `corners`). Просит ответ сырым JSON `{"design": …}` без пояснений.
+* **Проверка:** `RebuildModernizeAnswerSchema` (Zod, строгая: `RebuildEditAnswerSchema` без `order`, `hidden`, `dropped`, `customCss`, строковых полей нет), затем `checkRebuildEdit` (известные id, правила посадки: `arrangement` только там, где подходит серия от 3 абзацев до `REBUILD_CARD_MAX_CHARS` = 300 знаков или список от 3 элементов, `mediaSide` / `media` только у `media-beside-text` с фото, фото первого экрана существует после секции с `h1`, а у нее своего фото нет). Отклоненный первый ответ повторяется один раз с причиной (`previousAnswerRejected`).
+* **Fallback:** метод `choose` не бросает исключений при сбое модели. Нет провайдера или он не настроен — `{ source: 'default', design: defaultModernDesign(...), error: 'not_configured' }`; сбой вызова — `error: 'call_failed: …'`; два отклоненных ответа — `error: 'invalid: <причина>'`. Запасной вид сохраняется в `MvpProject.modernize` и помечается причиной `modernize:default`; если он получен из-за `call_failed` или `not_configured`, при следующей отрисовке вычисляется заново. Успех — `{ source: 'llm', design }`.
+* **Код:** `apps/workers/src/services/rebuild-modernize.service.ts` (`RebuildModernizeService`, `REBUILD_MODERNIZE_SYSTEM_PROMPT`), запасной вид и `modernizeForAudit` — `rebuild-modernize.ts`, вызов — `deploy.worker.ts` (генерация и `relayout-mvp`), применение — `planRebuild` (`mergeRebuildEdits`, правка оператора важнее). Проверка на реальных сайтах: `npx tsx scripts/render_rebuild.ts --llm --level modern --record <dir> <out-dir> <url>`.
+
+#### Схема валидации выхода (Zod Schema):
+```typescript
+// RebuildEditAnswerSchema (Агент 7) с полями REV-114, без order, hidden, dropped, customCss
+export const RebuildModernizeAnswerSchema = RebuildEditAnswerSchema.omit({ order: true, hidden: true, dropped: true, customCss: true }).strict();
+// sections[id]: { background?, align?, density?,
+//                 arrangement?: 'card-grid' | 'list', mediaSide?: 'left' | 'right', media?: 'natural' | 'fill' }
+// hero?: { photo: 's-<i>.m<n>', style: 'split' | 'banner' }
+// theme?: { font?, density?, corners?, headingCase?, typeScale?: 'original' | 'modern' }
+// Ответ модели: { design: RebuildModernizeAnswerSchema }
+```
+
+---
+
 ### 4.5. LLM-провайдеры и `LlmClient` (REV-30, REV-32, REV-37)
 * Все вызовы LLM из воркеров (кроме Vision-критики) идут через `LlmClient`; с REV-113 он принимает картинки (`images`) и возвращает расход токенов (`completeWithUsage`) — так работает группировка секций (Агент 6) (`apps/workers/src/services/llm-client.ts`): Anthropic, OpenAI, Gemini и локальный Claude Code CLI. Вызывающий код передает system/user prompt и получает сырой текст; разбор и Zod-валидация остаются у вызывающего.
 * Каталог провайдеров и моделей — `LLM_PROVIDER_CATALOG` в `@revamp/shared-types` (первая модель — модель по умолчанию):
