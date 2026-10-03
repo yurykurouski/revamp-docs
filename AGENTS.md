@@ -448,6 +448,41 @@ export const SiteGroupingAnswerSchema = z.object({
 
 ---
 
+### Агент 7: Агент правки перестройки (Rebuild Edit Agent) — REV-111
+* **Назначение:** Применить изменение, описанное оператором своими словами, к перестроенному MVP (макет `original`): переставить, скрыть, перекрасить секции оригинальной страницы, убрать абзацы или элементы, выбрать цвет или шаблонный макет, написать CSS.
+* **Модель:** провайдер и модель по умолчанию воркера (`MVP_LLM_PROVIDER`), `temperature: 0.2`, таймаут HTTP-провайдеров 90 с, одна попытка.
+* **Главное правило:** модель не пишет текст страницы — ни заголовков, ни фраз, ни чисел, ни контактов. Ответ содержит только id из контура страницы (`buildRebuildOutline`: секции `hero`/`content` с id `s-<index>`, видом, расположением, заголовком и кусками `s-<i>.t<n>` / `.i<n>` / `.x<n>` с превью до 160 знаков), фиксированные значения, цвет из `allowedColors`, макет и CSS. Просьба, требующая нового текста, ничего не меняет, причина — в `summary` (видит только оператор).
+* **Проверка:** `RebuildEditOutputSchema` (Zod, строгие объекты, без строковых полей кроме `customCss`), затем `checkRebuildEdit` (известные id, без повторов, не все секции скрыты, секция с `h1` не скрыта и, если открывает страницу, остается первой), затем `sanitizeMvpCss`, затем цвет из кандидатов. Нарушение — ошибка `502 MVP_EDIT_FAILED`, ничего не применяется частично.
+* **Код:** `apps/workers/src/services/rebuild-edit.service.ts` (`REBUILD_EDIT_SYSTEM_PROMPT` строится из `REBUILD_EDIT_BACKGROUNDS`, `REBUILD_EDIT_ALIGNS`, `MVP_DESIGN_FONTS` / `DENSITIES` / `CORNERS`, `REBUILD_CSS_HOOKS`), воркер — `mvp-edit.worker.ts`, применение — `planRebuild`.
+
+#### Схема валидации выхода (Zod Schema):
+```typescript
+export const RebuildEditAnswerSchema = z.object({
+  order: z.array(SectionId).max(45).optional(),       // 's-<index>'
+  hidden: z.array(SectionId).max(45).optional(),
+  dropped: z.array(PieceId).max(200).optional(),      // 's-<i>.t<n>' | 's-<i>.i<n>' | 's-<i>.x<n>'
+  sections: z.record(SectionId, z.object({
+    background: z.enum(['original', 'page', 'tinted', 'brand', 'dark']).optional(),
+    align: z.enum(['left', 'center']).optional(),
+    density: z.enum(MVP_DESIGN_DENSITIES).optional(),
+  }).strict()).optional(),
+  theme: z.object({
+    font: z.enum(MVP_DESIGN_FONTS).optional(),
+    density: z.enum(MVP_DESIGN_DENSITIES).optional(),
+    corners: z.enum(MVP_DESIGN_CORNERS).optional(),
+    headingCase: z.enum(['none', 'uppercase']).optional(),
+  }).strict().optional(),
+  customCss: z.string().max(4096).optional(),         // только через sanitizeMvpCss
+}).strict();
+
+export const RebuildEditOutputSchema = z.object({
+  summary: z.string().trim().min(1).max(300),
+  edit: RebuildEditAnswerSchema.nullable().optional(),  // вся новая правка; {} — сбросить; null — оставить
+  primaryColor: z.string().regex(/^#[A-Fa-f0-9]{6}$/).nullable().optional(),
+  layout: MvpLayoutVariantSchema.nullable().optional(), // шаблонный макет заменяет перестройку
+});
+```
+
 ### 4.5. LLM-провайдеры и `LlmClient` (REV-30, REV-32, REV-37)
 * Все вызовы LLM из воркеров (кроме Vision-критики) идут через `LlmClient`; с REV-113 он принимает картинки (`images`) и возвращает расход токенов (`completeWithUsage`) — так работает группировка секций (Агент 6) (`apps/workers/src/services/llm-client.ts`): Anthropic, OpenAI, Gemini и локальный Claude Code CLI. Вызывающий код передает system/user prompt и получает сырой текст; разбор и Zod-валидация остаются у вызывающего.
 * Каталог провайдеров и моделей — `LLM_PROVIDER_CATALOG` в `@revamp/shared-types` (первая модель — модель по умолчанию):
