@@ -380,7 +380,7 @@ export const MvpEditOutputSchema = z.object({
 * **Вход:** контур страницы `RawPageOutline` (`collectSiteSectionsInPage` → `outline`, до 600 кусков `OUTLINE_LIMITS.pieces` в порядке документа): заголовки (`h1`–`h6` или «стилевые» — строка 1–120 знаков одна в строке, жирная, ≥ 1,2× основного кегля или прописная), текст, разрезанный по `<br>` и границам блоков, списки, строки ссылок, фото от 40 px, фоновые фото от 200×100, встраивания; у каждого — рамка, шрифт, фон, `hidden` для сохраненного скрытого текста и `slide` для куска на слайде. Связанные карточки (`<a>` вокруг заголовка и абзацев) читаются как заголовки и текст, форма на всю страницу (ASP.NET) — как страница, клоны слайдов не читаются. Промпт показывает первые 160 знаков текста; плюс до 6 тайлов desktop-скриншота 1440×1800 (`ImageService.tilesForVision`, WebP 1024 px), ниша и URL.
 * **Модель:** `VISION_LLM_PROVIDER`, иначе `MVP_LLM_PROVIDER`, иначе первый ключ API, иначе локальный CLI, через `LlmClient` с картинками (Anthropic `image`, OpenAI `image_url`, Gemini `inline_data`, CLI stream-json). `temperature` 0.1, потом 0; 2 попытки; `maxTokens` 8000; таймаут HTTP 120 с; во второй попытке модели сообщают, почему первый ответ отклонен.
 * **Бюджет (замер на claude-cli sonnet):** anident.pl ≈ 12k входа / 0,6k выхода, falcodent.pl ≈ 19,5k / 1,2k; верхняя граница ≈ 25k входа и 4k выхода на вызов. Событие `token_usage` со стадией `audit_section_grouping`. Вызов идет параллельно с критикой дизайна.
-* **Проверка ответа** (`checkGrouping`): известные id, каждый не больше одного раза, у каждой секции заголовок — кусок `heading` или `text` до 120 знаков, логотип — `image`, хотя бы одна секция. Сборка: слайдер получает по элементу на слайд того слайдера, где текст (начиная со слайда на экране), галерея без элементов — по элементу на фото, любая другая секция без элементов — по элементу на строку ее первого куска `list` и списков сразу за ним (REV-122: модель называет список одним id и не может назвать его строки; ссылка списка идет со строкой, где есть ее текст, текст до списка остается вступлением, после — дополнительным блоком); затем `readSiteSections(raw, [], 'llm')` чистит, ограничивает, считает покрытие и валидирует `SiteSectionsSchema`. Куски, которые модель никуда не положила, — `skipped` с причиной `unassigned`, они не считаются захваченными.
+* **Проверка ответа** (`checkGrouping`): известные id, каждый не больше одного раза, у каждой секции заголовок — кусок `heading` или `text` до 120 знаков, логотип — `image` (необязателен; логотип-фон или текст модель кладет в `header.pieces`, а шапка сохраняет фон первым изображением — REV-133; строка фона в контуре называет файл), хотя бы одна секция. Сборка: слайдер получает по элементу на слайд того слайдера, где текст (начиная со слайда на экране), галерея без элементов — по элементу на фото, любая другая секция без элементов — по элементу на строку ее первого куска `list` и списков сразу за ним (REV-122: модель называет список одним id и не может назвать его строки; ссылка списка идет со строкой, где есть ее текст, текст до списка остается вступлением, после — дополнительным блоком); затем `readSiteSections(raw, [], 'llm')` чистит, ограничивает, считает покрытие и валидирует `SiteSectionsSchema`. Куски, которые модель никуда не положила, — `skipped` с причиной `unassigned`, они не считаются захваченными.
 * **Без запасного варианта** (`readPageSections`, REV-132): если провайдер не настроен, вызов упал, ответ дважды невалиден, сборка упала или чтение модели не проходит `rebuildEligibility`, секции не сохраняются. Причина пишется в `Audit.siteSectionsError` и `Audit.siteSectionsErrorReason` (`not_configured`, `call_failed`, `invalid_answer`, `ineligible`) и в `Audit.measurementErrors` как `sections` (не оценивается, дашборд показывает ее отдельной строкой). Чтение правилами во время работы не хранится и не перестраивается; без группировки модели генерация `original` падает с `MVP_REBUILD_UNAVAILABLE` и `grouping:<причина>`, а `PATCH /mvp/:id/layout` отвечает 409 с той же причиной. Аудит из-за группировки не падает.
 * **Код:** `apps/workers/src/services/site-grouping.service.ts` (`SITE_GROUPING_SYSTEM_PROMPT`, `SiteGroupingService`, `readPageSections`), `site-grouping.ts` (`checkGrouping`, `assembleGroupedBlocks`, `readGroupedSections`, `outlinePrompt`); проверка на реальных сайтах — `npx tsx scripts/read_site_sections.ts --llm <url>`, запись ответов для тестов — `--record <dir>`. Тесты используют только записанные ответы.
 
@@ -390,13 +390,15 @@ You organise a business's home page into sections. You never write text.
 
 Inputs: screenshots of the desktop page (1440px wide) in order, each with its page range, and an outline:
 one line per numbered piece of the page (heading, text, list, links, image, background, embed) with its
-font size, bold (b), position (y = px from the top of the page, x) and size, and the start of its text.
+font size, bold (b), position (y = px from the top of the page, x) and size, and the start of its text; a
+background's file name (file) can tell a logo banner from a photo.
 "styled" headings are short bold, large or uppercase lines that are not HTML headings. "hidden" pieces are
 kept page text that is not shown until clicked (an accordion answer, a tab). "slide=S.N" marks a piece on
 slide N of slider S; slides other than the current one sit outside the screenshots (x beyond the page width).
 
 Group the pieces as a visitor sees the page:
-- header: the logo image (logo) and the menu and top-bar pieces (pieces).
+- header: the logo (logo) and the menu and top-bar pieces (pieces). The logo is only an image piece, and optional:
+  when the brand mark is drawn as a background or as text, leave "logo" out and list that piece in the header pieces.
 - sections, in page order: each starts at its heading and holds every piece that belongs to that heading
   until the next section: its text, lists, buttons and the photos shown with it. A photo floated beside or
   between paragraphs belongs to that paragraph's section, never to a separate gallery.
@@ -423,7 +425,7 @@ Rules:
   own copy). Leave a piece out only when it is not content: a second copy of the header menu (for example a
   hidden mobile menu with the same links), a hit counter, an empty spacer.
 - Respond with one raw JSON object, no prose, no markdown:
-{"header":{"logo":<id>,"pieces":[<id>...]},"sections":[{"heading":<id>,"eyebrow":<id, optional>,"pieces":[<id>...],
+{"header":{"logo":<image id, optional>,"pieces":[<id>...]},"sections":[{"heading":<id>,"eyebrow":<id, optional>,"pieces":[<id>...],
 "items":[{"title":<id>,"pieces":[<id>...]}] (optional),"kind":"<kind>","arrangement":"<arrangement>"}],"footer":{"pieces":[<id>...]}}
 ```
 
