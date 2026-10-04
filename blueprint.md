@@ -233,7 +233,7 @@ flowchart TD
    * **Реализация (REV-99, REV-102):** Lighthouse не запускается (research.md, ADR 11); метрики хранятся в `Audit.webVitals`. `VitalsService` снимает метрики в мобильном контексте Playwright (375×812, без троттлинга) через `PerformanceObserver` с `buffered: true` (`performance.getEntriesByType` не отдаёт записи LCP и `layout-shift` в Chromium):
      - LCP — `startTime` последней записи `largest-contentful-paint`, в мс. Если записи нет, LCP не подменяется FCP или временем ответа — это ошибка измерения.
      - CLS — наибольшее окно сессии Core Web Vitals (сдвиги с разрывом < 1 с, окно ≤ 5 с) без сдвигов с `hadRecentInput` (Chromium помечает так и сдвиги первых ~500 мс после навигации); считается в `VitalsService.calculateCls`.
-     - Стандарты (REV-102) — HTTPS, viewport, title, фавикон (иконка в `<link>` или `/favicon.ico` через `page.request`, 3 с), Schema.org (JSON-LD с `@type` или микроданные) и OpenGraph; баллы `STANDARDS_POINTS` (30/30/10/10/10/10), результат — `Audit.standardsChecks`.
+     - Стандарты и SEO (REV-102, REV-118) — HTTPS, viewport, title, мета-описание, один `h1`, фавикон (иконка в `<link>` или `/favicon.ico` через `page.request`, 3 с), Schema.org (JSON-LD с `@type` или микроданные) и OpenGraph; читает `readStandardsInDocument` (`standards.page.ts`, самодостаточная функция: в странице через `page.evaluate`, у MVP — в happy-dom); баллы `STANDARDS_POINTS` в `@revamp/shared-types` (20/20/10/10/10/10/10/10), результат — `Audit.standardsChecks`.
      - Нарушения axe-core сохраняются в `Audit.axeViolations` (`AxeService.toStoredViolations`: селектор и HTML до 300 символов, `failureSummary` до 500, до 20 узлов на правило, `nodeCount` — полное число).
 
 4. **Мультимодальный AI-анализ дизайна (Vision UX/UI Critique):**
@@ -628,7 +628,7 @@ interface IAudit {
   // Только измеренные в странице LCP (мс) и CLS; Speed Index и INP не хранятся — headless-загрузка их не измеряет (REV-105)
   webVitals: { lcp?: number; cls?: number };     // до REV-102 — lighthouseMetrics (migrate:audit-vitals)
   // Проверки стандартов (REV-102); отсутствуют, если страницу не удалось прочитать
-  standardsChecks?: { https: boolean; viewport: boolean; title: boolean; favicon: boolean; structuredData: boolean; openGraph: boolean };
+  standardsChecks?: { https: boolean; viewport: boolean; title: boolean; metaDescription?: boolean; singleH1?: boolean; favicon: boolean; structuredData: boolean; openGraph: boolean };   // metaDescription, singleH1 — REV-118, у аудитов до него нет
   // Измерения, которые не удалось снять, и причина; их значения в документе отсутствуют (REV-100)
   measurementErrors?: Array<{ measurement: 'performance' | 'accessibility' | 'standards' | 'design' | 'sections'; message: string }>; // sections (REV-113): секции прочитаны правилами вместо Vision-модели, не оценивается
   a11ySummary?: {                  // отсутствует, если сканирование axe не удалось
@@ -745,7 +745,11 @@ interface IMvpProject {
     sections: number;             // сколько секций отрендерено
     omitted: Array<{ what: 'section' | 'nav_link' | 'link' | 'embed' | 'image' | 'text' | 'item'; reason: string; sample?: string }>;   // до 80; секция, опустевшая после отбрасывания ссылок, — what 'section', reason 'empty'; скрытая оператором — reason 'hidden'; удаленный абзац / элемент — 'text' / 'item', reason 'dropped' (REV-111)
     level?: 'faithful' | 'modern';   // REV-114: уровень, которым отрисована страница
-    tuning: string[];             // коды исправлений: 'contrast:3', 'overlay:1', 'alt:12', 'font:body-16', 'line-height:1.5', 'collapse:11', 'h1:hidden', 'booking:replaced', 'footer:added'; до 120
+    tuning: string[];             // коды исправлений: 'contrast:3', 'overlay:1', 'alt:12', 'font:body-16', 'line-height:1.5', 'collapse:11', 'h1:hidden', 'booking:replaced', 'footer:added', 'seo:description' | 'seo:og' | 'seo:jsonld' (REV-118: тег, которого не было у оригинала); до 120
+  };
+  standards?: {                   // REV-118 (MvpStandardsSchema): проверки опубликованной страницы теми же правилами, что и аудит; пересчитываются при каждой публикации
+    checks: { https: boolean; viewport: boolean; title: boolean; metaDescription: boolean; singleH1: boolean; favicon: boolean; structuredData: boolean; openGraph: boolean };   // https — готовность к HTTPS: ничего не грузится по http://
+    score: number;                // сумма баллов STANDARDS_POINTS пройденных проверок
   };
   modernize?: {                   // REV-114 (RebuildModernizeSchema): вид уровня modern, только id и фиксированные значения; по аудиту
     auditId: string;              // для другого аудита не применяется (modernizeForAudit), перегенерация по новому аудиту снимает
