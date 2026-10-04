@@ -330,7 +330,7 @@ flowchart TD
    * Инжекция аналитического скрипта трекинга (`revamp-tracker.js`): регистрирует факт входа владельца, скролл, клики по кнопкам демо.
    * MVP раздается с хоста хранилища (MinIO / `PREVIEW_DOMAIN`), поэтому скрипт подключается по абсолютному адресу API (REV-52): `<script src="{PUBLIC_API_URL}/track/revamp-tracker.js" data-api="{origin PUBLIC_API_URL}" data-token="…">`, и события уходят на `{PUBLIC_API_URL}/track/mvp-event`. Относительный путь `/api/v1/...` разрешился бы в хранилище (403). Без `PUBLIC_API_URL` скрипт не встраивается. Адрес фиксируется при генерации: после его смены MVP нужно перегенерировать.
    * Публикация в бакет `revamp-demos` по ключу `v/{previewSlug}/index.html` (slug — транслитерированное название бизнеса + 6 последних символов `leadId`).
-   * Автоматический снимок созданного лендинга через Playwright для формирования баннера «До/После» (Split-screen Comparison, 1200x630).
+   * Автоматический снимок созданного лендинга через Playwright для формирования баннера «До/После» (Split-screen Comparison, 1200x630). На баннере только измеренные значения (REV-126): LCP, нарушения axe и балл стандартов оригинала (`comparableStandardsScore`), балл стандартов MVP (`checkMvpStandards` до выгрузки, тот же, что пишется в `MvpProject.standards`); неизмеренное опускается, без скриншота оригинала — надпись «not available».
 
 6. **Перегенерация (REV-31):**
    * Правила `mvpGenerationMode` (`@revamp/validation`): из `AUDITED` — первая генерация; из `NEEDS_APPROVAL` — только с `forceRegenerate`; после постановки письма в отправку (`SCHEDULED` и далее) и во время генерации — запрещено (409).
