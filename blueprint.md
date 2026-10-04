@@ -746,6 +746,21 @@ interface IMvpProject {
     omitted: Array<{ what: 'section' | 'nav_link' | 'link' | 'embed' | 'image' | 'text' | 'item'; reason: string; sample?: string }>;   // до 80; секция, опустевшая после отбрасывания ссылок, — what 'section', reason 'empty'; скрытая оператором — reason 'hidden'; удаленный абзац / элемент — 'text' / 'item', reason 'dropped' (REV-111)
     level?: 'faithful' | 'modern';   // REV-114: уровень, которым отрисована страница
     tuning: string[];             // коды исправлений: 'contrast:3', 'overlay:1', 'alt:12', 'font:body-16', 'line-height:1.5', 'collapse:11', 'h1:hidden', 'booking:replaced', 'footer:added', 'seo:description' | 'seo:og' | 'seo:jsonld' (REV-118: тег, которого не было у оригинала); до 120
+    facts?: Array<{               // REV-119: измерения за кодами (у новых сводок всегда есть, хотя бы []; нет — сводка до REV-119)
+      code: string;                 // код из tuning
+      section?: string;             // заголовок секции на оригинале (нет — у секции нет заголовка)
+      from?: string | number; to?: string | number;   // цвет текста (contrast), размер шрифта в px (font:body-16), межстрочный интервал (line-height:1.5)
+      background?: string;          // фон, на котором проверен цвет (contrast)
+      ratioBefore?: number; ratioAfter?: number;      // коэффициенты контраста, округлены вниз до сотых
+      value?: number;               // непрозрачность затемнения (overlay), длина свернутого текста (collapse)
+    }>;
+  };
+  performance?: {                 // REV-119 (MvpPerformanceSchema): опубликованная страница в мобильном профиле аудита, LCP и CLS тем же кодом в странице (VitalsService.readVitalsInPage); при каждой публикации
+    webVitals: { lcp?: number; cls?: number };   // lcp в мс; без LCP — error, подставного числа нет
+    score?: number;               // calculatePerformanceScore, как у оригинала; только при LCP
+    host: string;                 // где измерено: хост превью, а не хостинг бизнеса
+    measuredAt: Date;
+    error?: string;               // 'The page reported no largest-contentful-paint entry' или причина сбоя загрузки
   };
   standards?: {                   // REV-118 (MvpStandardsSchema): проверки опубликованной страницы теми же правилами, что и аудит; пересчитываются при каждой публикации
     checks: { https: boolean; viewport: boolean; title: boolean; metaDescription: boolean; singleH1: boolean; favicon: boolean; structuredData: boolean; openGraph: boolean };   // https — готовность к HTTPS: ничего не грузится по http://
@@ -1017,7 +1032,7 @@ graph LR
    * Concurrency: `5`. Ретраи: 3 попытки, экспоненциальный откат от 5 с.
    * Рендер Bento, проверка полноты, выгрузка в `revamp-demos`, баннер «До/После», `Lead.status = NEEDS_APPROVAL`.
    * Обработчик `failed` (общий с AI-воркером, `generation-failure.ts`) после последнего ретрая возвращает лид из `GENERATING` и пишет `generationError`.
-   * Задачи `relayout-mvp` (`mode: 'relayout'`, REV-84, REV-90): перерисовка опубликованного MVP в сохраненном макете и палитре (`MvpProject.colorPalette` вместо цветов аудита) из `MvpProject.generatedContent` тем же детерминированным шаблоном, выгрузка в тот же slug и новый баннер «До/После». Без LLM, без проверки полноты и без смены статуса лида; лид вне `NEEDS_APPROVAL` пропускается. После выгрузки макет читается снова, и если оператор успел сменить его, бандл перерисовывается (до 3 проходов). Сбой такой задачи не трогает лид.
+   * Задачи `relayout-mvp` (`mode: 'relayout'`, REV-84, REV-90): перерисовка опубликованного MVP в сохраненном макете и палитре (`MvpProject.colorPalette` вместо цветов аудита) из `MvpProject.generatedContent` тем же детерминированным шаблоном, выгрузка в тот же slug и новый баннер «До/После». Без LLM, без проверки полноты и без смены статуса лида; лид вне `NEEDS_APPROVAL` пропускается. После выгрузки макет читается снова, и если оператор успел сменить его, бандл перерисовывается (до 3 проходов). Сбой такой задачи не трогает лид. После каждой выгрузки (и при генерации) воркер снимает LCP и CLS опубликованной страницы (`measureMvpPerformance` → `BrowserService.measurePageVitals`, мобильный профиль аудита) и пишет `completenessReport`, `standards` и `performance` одним обновлением со сводкой перестройки и `editedAt` (REV-119), чтобы дашборд, который перестает ждать по этому обновлению, не показал проверки прошлой страницы.
 5. **`email-queue` Worker:**
    * Throttling: строго 1 письмо в 3 минуты (BullMQ limiter `max: 1, duration: 180000`).
    * Jitter: случайная задержка 15–45 секунд, рассчитываемая API при постановке задачи.
