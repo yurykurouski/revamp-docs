@@ -163,7 +163,8 @@ export const DesignCritiqueOutputSchema = z.object({
 * **Два режима:** `generate(brief)` — новый дизайн; `change(brief, currentPage, instruction)` — текущая сырая страница и слова оператора (`POST /mvp/:id/edit`, REV-139), модель возвращает всю страницу с изменением. Проверки и повтор — те же.
 * **Проверка ответа:** обрамление кодом (```` ``` ````) снимается, затем `checkMvpPage` (`mvp-page-check.ts`). Zod-схемы у тела ответа нет: ответ — HTML, и его проверяет код. Отклоненный ответ повторяется один раз со всеми причинами и самой отклоненной страницей (до 60 000 символов), чтобы модель исправила, а не придумала заново. Принятая страница идет в `checkMvpGrounding`.
 * **Сбой:** `MVP_PAGE_FAILURES` — `not_configured` (нет провайдера), `call_failed` (вызовы не дошли), `invalid_page` (страница отклонена дважды, или отклонена, а повтор упал). Запасной страницы нет. `not_configured` и `invalid_page` окончательны: генерация завершается `MvpPageUnavailableError` (`UnrecoverableError`), в `Lead.generationFailure` пишется `{ code: 'MVP_PAGE_UNAVAILABLE', reason, message, at }`. `call_failed` повторяется как любая ошибка задачи (3 попытки с экспоненциальным откатом); после последней лид получает только `generationError`. Неудачное изменение ничего не публикует.
-* **Код:** `apps/workers/src/services/mvp-page-generator.ts` (`MVP_PAGE_SYSTEM_PROMPT`, `MvpPageGenerator`), записанные ответы для тестов — `apps/workers/src/services/__tests__/fixtures/page-gen/`; на живых сайтах — `npx tsx scripts/generate_mvp_page.ts [--record <dir>] <out-dir> <url...>` (только чтение: без базы, хранилища и очередей).
+* **Самопроверка (REV-143, `MVP_PAGE_SELF_REVIEW`, по умолчанию выключена):** только в `generate`. Принятая страница завершается без трекера и снимается целиком на 1440 и 390 px (`pageReviewRenderer`, `mvp-page-review.ts`); один вызов ревизии с той же системной инструкцией, брифом, страницей и тайлами снимков (до 2 десктопных и 3 мобильных, длинная страница — более высокими тайлами), температура `0.3`, задание — `MVP_PAGE_REVIEW_PROMPT` (ниже). Ревизия проходит `checkMvpPage`, иначе остается первая страница; сбой рендера или вызова тоже оставляет первую. Исход `MvpPageReview`: `revised` | `unchanged` | `rejected` | `failed`. Повтора у ревизии нет.
+* **Код:** `apps/workers/src/services/mvp-page-generator.ts` (`MVP_PAGE_SYSTEM_PROMPT`, `MVP_PAGE_REVIEW_PROMPT`, `MvpPageGenerator`), записанные ответы для тестов — `apps/workers/src/services/__tests__/fixtures/page-gen/`; на живых сайтах — `npx tsx scripts/generate_mvp_page.ts [--self-review] [--record <dir>] <out-dir> <url...>` (только чтение: без базы, хранилища и очередей).
 
 #### Системный промпт (System Prompt):
 ```text
@@ -217,6 +218,15 @@ Structure:
   collapse may simply wrap.
 
 Answer with exactly one complete HTML document, from <!DOCTYPE html> to </html>: no prose, no markdown fence.
+```
+
+#### Задание самопроверки (`MVP_PAGE_REVIEW_PROMPT`, REV-143):
+```text
+The images are your page as rendered: first at 1440 px wide (desktop), then at 390 px wide (mobile), each top
+to bottom, with the contacts and the booking form filled in. Review it as a designer and fix only what is visibly wrong:
+horizontal scroll or content cut off on mobile, overlapping or clipped text, text with too little contrast, stretched or
+broken images, empty or collapsed sections. Keep the design, the copy, the images and the placeholders; every rule above
+still applies. If nothing needs fixing, answer with the page unchanged. Answer with the whole page.
 ```
 
 User prompt: `Brief (JSON):` с брифом, список разрешенных плейсхолдеров и число скриншотов; в режиме `change` — текущая страница и `Operator's change: …`; на повторе — причины отклонения и отклоненная страница.
