@@ -158,7 +158,7 @@ sequenceDiagram
 Перед возвратом результата `runDiscovery` вызывает `assessCandidates` (`apps/workers/src/services/site-assessment.service.ts`) для каждого предложенного `new` кандидата: пул из `DISCOVERY_ASSESS_CONCURRENCY` (6) параллельных проверок, каждая с таймаутом `DISCOVERY_ASSESS_TIMEOUT_MS` (8000 мс).
 
 1. `fetchHomePage`: `fetch` с `redirect: 'manual'`, до 5 редиректов, каждый хост проходит `isBlockedHost` (localhost, `.local`/`.internal`, частные IPv4, IPv6-литералы). Сбой https → повтор по http (ошибка сертификата запоминается). Не 2xx → `http_error`, не HTML → `not_html`, чтение до 2 МБ, кодировка из `Content-Type`.
-2. `parseHomePage`: happy-dom `DOMParser` без загрузки и выполнения скриптов; год copyright ищется только в тексте страницы.
+2. `parseHomePage`: happy-dom `DOMParser` без загрузки и выполнения скриптов; год copyright ищется только в тексте страницы. Перед разбором из HTML убираются `<link rel="preload">` и `modulepreload` (`withoutPreloadLinks`, REV-144): у окна нет базового URL, и относительный preload (Nuxt `/_payload.json`) роняет happy-dom ошибкой `Invalid URL`.
 3. `detectBadSigns` / `detectComplexitySigns` (внутренние страницы — общий `collectInternalPages` из REV-38) → `explainVerdict`: вердикт, `verdictReason`, `signScore`, `signScoreNeeded`.
 4. Результат проходит `SiteAssessmentSchema` и записывается в `candidate.assessment`; сбой — `{ outcome: 'failed', failure }` без вердикта.
 
