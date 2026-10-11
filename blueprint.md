@@ -295,7 +295,7 @@ flowchart TD
 3. **Генерация страницы (`MvpPageGenerator`, `mvp-page-generator.ts`, `MVP_PAGE_SYSTEM_PROMPT`, REV-137):**
    * Один Vision-вызов через `LlmClient`: бриф (JSON), разрешенные плейсхолдеры и до 3 тайлов десктопного скриншота аудита. Ответ — один HTML-документ; обрамление кодом снимается. Промпт и проверки — в [`AGENTS.md`](AGENTS.md), Агент 2.
    * Модель свободно выбирает структуру, секции и вид; текст — только из брифа, без новых фактов; контакты и запись — только плейсхолдеры `MVP_PLACEHOLDERS`; все цвета и шрифты — через переменные `MVP_THEME_VARS` в `:root`; картинки — только из брифа; без скриптов, форм, iframe и внешних ресурсов, кроме Google Fonts.
-   * `checkMvpPage` (`mvp-page-check.ts`) отклоняет ответ с кодами `MVP_PAGE_CHECKS`; отклоненный ответ повторяется один раз с причинами и самой страницей. Два отклонения, отсутствие провайдера или упавшие вызовы — сбой `MVP_PAGE_FAILURES` (`not_configured`, `call_failed`, `invalid_page`): `MvpPageUnavailableError` (`UnrecoverableError`), `Lead.generationFailure = { code: 'MVP_PAGE_UNAVAILABLE', reason, message, at }`. Запасной страницы нет.
+   * `checkMvpPage` (`mvp-page-check.ts`) отклоняет ответ с кодами `MVP_PAGE_CHECKS`; отклоненный ответ повторяется один раз с причинами и самой страницей. Два отклонения или отсутствие провайдера окончательны (`invalid_page`, `not_configured`): `MvpPageUnavailableError` (`UnrecoverableError`), `Lead.generationFailure = { code: 'MVP_PAGE_UNAVAILABLE', reason, message, at }`. Упавшие вызовы (`call_failed`) — обычная ошибка задачи: BullMQ повторяет ее (3 попытки), после последней лид получает только `generationError`. Запасной страницы нет.
    * `checkMvpGrounding` (`mvp-grounding.ts`) извлекает из видимого текста числа и имена и помечает те, которых нет в тексте брифа (`IMvpGroundingFlag`: `kind` `number` | `name`, `text`, `context`). Флаги не отклоняют страницу; они сохраняются в `MvpProject.grounding` и показываются оператору.
    * **Выбор провайдера и модели (REV-30, REV-32):** оператор выбирает провайдера (`anthropic`, `openai`, `gemini`, `claude-cli`) и модель в диалоге генерации; выбор действует только на эту задачу, иначе `pageProvider()`: `VISION_LLM_PROVIDER`, иначе `MVP_LLM_PROVIDER` или первый найденный API-ключ, иначе локальный CLI. Провайдер с ошибкой вызова **никогда** не переключается на другой платный провайдер. `MvpProject` хранит выбранные (`requestedProvider/Model`) и фактические (`provider`, `modelUsed`) значения.
    * **Локальный Claude Code CLI (REV-30):** провайдер `claude-cli` запускает `claude -p` в headless-режиме под аккаунтом, в который залогинен CLI (без API-ключа): без инструментов, без MCP, без пользовательских настроек, во временной рабочей папке; промпт передается через stdin.
@@ -334,7 +334,7 @@ flowchart TD
    * `change` (`POST /mvp/:id/edit`): генератор в режиме `change` получает текущую сырую страницу и слова оператора и возвращает всю страницу; те же проверки и повтор. Неудача ничего не публикует (`502 MVP_EDIT_FAILED` с причиной).
    * `controls` (`PATCH /mvp/:id/tokens`): цвета (пять ролей, текст на фоне и на поверхности не ниже `MVP_MIN_CONTRAST` 4,5:1) и пара шрифтов из `MVP_FONT_CHOICES` сохраняются в `controls` и публикуются без вызова модели и без новой версии.
    * `restore` (`POST /mvp/:id/versions/:n/restore`): сырая страница версии `n` проверяется по текущему аудиту и публикуется с текущими `controls` как новая версия `restore`.
-   * API ждет задачу до 420 с (изменение) или 120 с (цвета, шрифты, восстановление) и передает воркеру срок (`deadline`); воркер начинает публикацию, только если до срока осталось больше `PUBLISH_MARGIN_MS` (90 с), иначе задача ничего не меняет, а API отвечает `504 MVP_EDIT_TIMEOUT` (с пометкой, что изменение еще может быть опубликовано, если задача уже публикует).
+   * API ждет задачу до 420 с (изменение) или 120 с (цвета, шрифты, восстановление) и передает воркеру срок (`deadline`); воркер начинает публикацию, только если до срока осталось больше `PUBLISH_MARGIN_MS` (90 с), иначе задача ничего не публикует, и API, который еще ждет, отвечает `502 MVP_EDIT_FAILED` (для `change` генератор сам останавливается на этом сроке с `call_failed`). `504 MVP_EDIT_TIMEOUT` — только если задача не завершилась за время ожидания (стояла в очереди или публикация затянулась); если она уже выполнялась, `message` говорит, что изменение еще может быть опубликовано.
 ---
 
 ### Модуль 3: Модуль персонализированных писем (Email Outreach)
@@ -426,7 +426,7 @@ sequenceDiagram
    * Шаг 2 «Прототип» (`PrototypeStep`): интерактивный `<iframe sandbox="allow-scripts allow-same-origin">` со сгенерированным MVP, тулбар брейкпоинтов (Desktop / Tablet / Mobile), флаги фактов страницы со ссылкой «Показать в превью», «Что изменилось» (только измеренное) и плавающая панель «Инструменты дизайна»: изменение своими словами, цвета, шрифты, версии с восстановлением и перегенерация (REV-140).
    * Полностраничные скриншоты исходного сайта в прокручиваемом просмотрщике со ссылкой «Открыть в полном размере» (REV-21).
    * Чек-лист полноты MVP (`CompletenessChecklist`, REV-36/37): поле, значение на исходном сайте, значение в MVP, статус, кто решил (LLM или код), метод и модель проверки.
-   * Кто написал тексты MVP: провайдер и модель (`MvpSourceChip`, REV-32).
+   * Кто написал страницу MVP: провайдер и модель (`MvpSourceChip`, REV-32, REV-137).
 3. **Шаг 3 «Письмо» (подтверждение отправки, HITL):**
    * Быстрый предпросмотр темы и текста письма.
    * Кнопка инлайн-редактирования текста перед отправкой.
@@ -630,7 +630,7 @@ interface IAudit {
   // Проверки стандартов (REV-102); отсутствуют, если страницу не удалось прочитать
   standardsChecks?: { https: boolean; viewport: boolean; title: boolean; metaDescription?: boolean; singleH1?: boolean; favicon: boolean; structuredData: boolean; openGraph: boolean };   // metaDescription, singleH1 — REV-118, у аудитов до него нет
   // Измерения, которые не удалось снять, и причина; их значения в документе отсутствуют (REV-100)
-  measurementErrors?: Array<{ measurement: 'performance' | 'accessibility' | 'standards' | 'design' | 'sections'; message: string }>; // sections (REV-113): секции прочитаны правилами вместо Vision-модели, не оценивается
+  measurementErrors?: Array<{ measurement: 'performance' | 'accessibility' | 'standards' | 'design'; message: string }>; // AUDIT_MEASUREMENTS; 'sections' (REV-113) удален в REV-141 — у старых аудитов дашборд его не показывает
   a11ySummary?: {                  // отсутствует, если сканирование axe не удалось
     violationsCount: number;
     contrastIssuesCount: number;
@@ -819,27 +819,27 @@ interface IAnalyticsEvent {
 | HTTP | `code` | Когда |
 |---|---|---|
 | `400` | `VALIDATION_ERROR` | Тело, query или params не прошли Zod-схему; `message` — первая ошибка (`path: message`), `details.issues` — все ошибки Zod |
-| `400` | `INVALID_ID` | Неверный ObjectId (Mongoose `CastError` или проверка в маршрутах `/outreach`, `PATCH /mvp/:id/tokens` и `PATCH /mvp/:id/layout`) |
+| `400` | `INVALID_ID` | Неверный ObjectId (Mongoose `CastError` или проверка в маршрутах `/outreach`, `POST /mvp/:id/edit`, `PATCH /mvp/:id/tokens` и `POST /mvp/:id/versions/:n/restore`) |
 | `400` | `INVALID_JSON` | Тело запроса — невалидный JSON |
 | `413` | `PAYLOAD_TOO_LARGE` | Тело больше лимита `express.json` (10 МБ) |
 | `409` | `DUPLICATE` | Нарушение уникального индекса MongoDB (код `11000`) |
 | `404` | `NOT_FOUND` | Неизвестный маршрут |
 | `500` | `INTERNAL` | Непредвиденная ошибка; в production `message` = `Internal server error` |
 | `400` | `INVALID_URL` | `POST /leads`: `originalUrl` не разбирается как URL |
-| `404` | `LEAD_NOT_FOUND` | Лид не найден (`/leads/:id`, `/audits/trigger`, `/mvp/generate`, `PATCH /mvp/:id/layout`, `/outreach/*`) |
+| `404` | `LEAD_NOT_FOUND` | Лид не найден (`/leads/:id`, `/audits/trigger`, `/mvp/generate`, `POST /mvp/:id/edit`, `PATCH /mvp/:id/tokens`, `POST /mvp/:id/versions/:n/restore`, `/outreach/*`) |
 | `409` | `LEAD_NOT_AUDITABLE` | `POST /audits/trigger`: лид не в `QUEUED` / `AUDIT_FAILED` или изменился во время постановки; `details.status` |
 | `404` | `AUDIT_NOT_FOUND` | `GET /audits/:id` |
 | `400` | `LLM_PROVIDER_NOT_ALLOWED` | `POST /mvp/generate`: dev-only провайдер в production |
 | `404` | `NO_COMPLETED_AUDIT` | `POST /mvp/generate`: у лида нет завершенного аудита |
 | `409` | `MVP_GENERATION_NOT_ALLOWED` | `POST /mvp/generate`: статус лида не позволяет генерацию или лид изменился во время постановки; `details.status` |
 | `409` | `MVP_ALREADY_GENERATED` | `POST /mvp/generate`: MVP уже есть, а `forceRegenerate` не задан; `details.status` |
-| `404` | `MVP_NOT_FOUND` | `GET /mvp/:id`, `PATCH /mvp/:id/tokens`, `PATCH /mvp/:id/layout` |
-| `409` | `MVP_EDIT_NOT_ALLOWED` | `POST /mvp/:id/edit`: лид не в `NEEDS_APPROVAL`; `details.status` (REV-85) |
+| `404` | `MVP_NOT_FOUND` | `GET /mvp/:id`, `POST /mvp/:id/edit`, `PATCH /mvp/:id/tokens`, `POST /mvp/:id/versions/:n/restore` |
+| `409` | `MVP_EDIT_NOT_ALLOWED` | `POST /mvp/:id/edit`, `PATCH /mvp/:id/tokens`, `POST /mvp/:id/versions/:n/restore`: лид не в `NEEDS_APPROVAL`; `details.status` (REV-85, REV-139) |
 | `502` | `MVP_EDIT_FAILED` | `POST /mvp/:id/edit`, `PATCH /mvp/:id/tokens`, `POST /mvp/:id/versions/:n/restore`: ничего не опубликовано — задача упала или модель не дала страницы; `message` содержит причину, `details.reason` (`not_configured`, `call_failed`, `invalid_page`) и `details.problems` (коды `MVP_PAGE_CHECKS` с пояснениями) (REV-85, REV-139) |
 | `409` | `MVP_PREVIOUS_GENERATOR` | `POST /mvp/:id/edit`, `PATCH /mvp/:id/tokens`, `POST /mvp/:id/versions/:n/restore`: MVP сделан прежним генератором (нет `page`/`theme`), к нему применима только перегенерация (REV-139) |
 | `404` | `MVP_VERSION_NOT_FOUND` | `POST /mvp/:id/versions/:n/restore`: версии `n` нет в `MvpProject.versions` (REV-139) |
 | `409` | `MVP_VERSION_UNUSABLE` | `POST /mvp/:id/versions/:n/restore`: версия не проходит проверку страницы по текущему аудиту (например, `{{hours}}` без часов работы); `details.problems`, ничего не опубликовано (REV-139) |
-| `504` | `MVP_EDIT_TIMEOUT` | `POST /mvp/:id/edit`: воркеры не ответили вовремя (REV-85; с REV-139 — 420 с на изменение, 120 с на палитру, шрифты и восстановление). Воркер начинает публикацию, только если до конца ожидания осталось не меньше `PUBLISH_MARGIN_MS` (90 с); если задача уже выполнялась, `message` говорит, что изменение еще может быть опубликовано |
+| `504` | `MVP_EDIT_TIMEOUT` | `POST /mvp/:id/edit`, `PATCH /mvp/:id/tokens`, `POST /mvp/:id/versions/:n/restore`: задача не завершилась за время ожидания (REV-85; с REV-139 — 420 с на изменение, 120 с на цвета, шрифты и восстановление). Воркер начинает публикацию, только если до конца ожидания осталось больше `PUBLISH_MARGIN_MS` (90 с), иначе ничего не публикует и API отвечает `502 MVP_EDIT_FAILED`; если задача уже выполнялась, `message` говорит, что изменение еще может быть опубликовано |
 | `404` | `PREVIEW_NOT_FOUND` | `GET /mvp/preview/:slug` |
 | `409` | `LEAD_NOT_AWAITING_APPROVAL` | `POST /outreach/:id/approve`: лид не в `NEEDS_APPROVAL` |
 | `409` | `LEAD_NOT_REJECTABLE` | `POST /outreach/:id/reject`: outreach уже одобрен или лид закрыт |
@@ -978,7 +978,7 @@ graph LR
    * Ретраи: 3 попытки, экспоненциальный откат от 3 с. Постоянные ошибки навигации (`ERR_NAME_NOT_RESOLVED`, `ERR_CERT_*`, `ERR_INVALID_URL`) завершаются `UnrecoverableError` без повтора. После последней попытки лид переходит из `AUDITING` в `AUDIT_FAILED` с причиной в `auditError` (`audit-failure.ts`, REV-44). Лиды, застрявшие до исправления, переводятся скриптом `backfill:stuck-audits`.
    * По завершении ставит задачу в `ai-gen-queue`. При старте воркеров лиды, застрявшие в `AUDITED` с завершенным аудитом, ставятся в очередь повторно (`recoverStalledAuditedLeads`).
 3. **`ai-gen-queue` Worker:**
-   * Concurrency: `5`. Ретраи: 3 попытки, экспоненциальный откат от 5 с; внутри задачи — генератор страницы (Агент 2 в `AGENTS.md`): до 2 обращений к модели (температура 0.7, затем 0.3 с причинами отклонения). Модель не дала страницы (`MVP_PAGE_FAILURES`) — `MvpPageUnavailableError` (`UnrecoverableError`), без ретраев и без запасной страницы.
+   * Concurrency: `5`. Ретраи: 3 попытки, экспоненциальный откат от 5 с; внутри задачи — генератор страницы (Агент 2 в `AGENTS.md`): до 2 обращений к модели (температура 0.7, затем 0.3 с причинами отклонения). `not_configured` и `invalid_page` — `MvpPageUnavailableError` (`UnrecoverableError`), без ретраев; `call_failed` повторяется ретраями задачи. Запасной страницы нет.
    * Принятая страница, тема и флаги фактов передаются в `deploy-queue` (`IDeployJobData.page`).
    * Payload несет `forceRegenerate`, `previousStatus` и выбор оператора (`provider`, `model`).
 4. **`deploy-queue` Worker:**
