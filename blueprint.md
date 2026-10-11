@@ -46,8 +46,9 @@ graph TB
     subgraph Workers [Фоновые воркеры / Очереди задач]
         W_Disc[Discovery Worker: OSM Overpass/Nominatim, Google Places]
         W_Audit[Audit Worker: Playwright + Cookie Consent + Axe + Vitals + Site Content]
-        W_AI[AI Worker: MvpContentAgent через LlmClient]
-        W_Gen[Deploy Worker: Bento-сборка + проверка полноты + S3]
+        W_AI[AI Worker: MvpPageGenerator через LlmClient + checkMvpPage]
+        W_Gen[Deploy Worker: finishMvpPage + проверки + S3]
+        W_Page[MVP Page Worker: изменение, цвета и шрифты, восстановление]
         W_Mail[Email Worker: SMTP / Resend / DNS Health]
     end
 
@@ -75,6 +76,7 @@ graph TB
     W_AI --> LLM
     W_AI --> CLI
     W_Gen --> LLM
+    W_Page --> LLM
     Controllers -->|reverse-geocode| Maps
 ```
 
@@ -86,7 +88,7 @@ graph TB
 * **Очереди и кэш:** Redis (v7+) + BullMQ (для отказоустойчивой асинхронной обработки тяжелых задач браузера и LLM).
 * **Headless Browser & Аудит:** Playwright (Chromium), `@axe-core/playwright`, замеры Core Web Vitals в браузере, `happy-dom` для разбора HTML сгенерированного MVP.
 * **Поиск бизнесов (Discovery):** OpenStreetMap (Nominatim + Overpass, без ключа, ODbL) и Google Places API (New) Text Search (по ключу).
-* **AI & LLM:** единый `LlmClient` для Anthropic, OpenAI, Gemini и локального Claude Code CLI; каталог провайдеров и моделей — в `@revamp/shared-types` (`LLM_PROVIDER_CATALOG`). Оператор выбирает провайдера и модель для каждой генерации MVP. LLM пишет только тексты и суждения; HTML строится детерминированным шаблоном.
+* **AI & LLM:** единый `LlmClient` для Anthropic, OpenAI, Gemini и локального Claude Code CLI; каталог провайдеров и моделей — в `@revamp/shared-types` (`LLM_PROVIDER_CATALOG`). Оператор выбирает провайдера и модель для каждой генерации MVP. Страницу MVP (HTML и CSS) пишет модель, но контакты подставляет, ответ проверяет и неподтвержденные факты помечает код (REV-135); метрики и контакты LLM не вычисляет.
 * **Фронтенд:** React (v18+), TypeScript, Vite, Material UI (MUI v6), TanStack Query, Zustand, i18next (en, ru, be, pl, lt).
 * **Email & Deliverability:** Nodemailer / Resend API / SendGrid, DKIM/SPF валидатор, генерация пикселей отслеживания и URL-редиректов.
 * **Хостинг MVP-демо:** AWS S3 / Cloudflare R2 + CloudFront / Wildcard-поддомены (`*.preview.revampsaas.io`).
@@ -244,7 +246,6 @@ flowchart TD
      - Эффект «устаревшего сайта» (Dated Design Smell: градиенты 2010-х, неадаптивные таблицы, перегруженные меню).
      - Формирование списка из 3 критических UX-проблем и 3 очевидных точек роста (Quick Wins).
    * **Провайдеры Vision (REV-51):** `VISION_LLM_PROVIDER` (`anthropic`, `openai`, `claude-cli`) или, если он пуст, по порядку: ключ Anthropic, ключ OpenAI, локальный Claude Code CLI (если `CLAUDE_CLI_PATH` найден). CLI получает оба скриншота первого экрана (mobile и desktop WebP) как image-блоки одного сообщения через `--input-format stream-json` / `--output-format stream-json` с теми же ограничениями, что и для текста: без инструментов, MCP, настроек и сохранения сессии, во временной рабочей папке. `modelUsed` = `claude-cli:<CLAUDE_CLI_MODEL>`, токены берутся из события `result` CLI (включая кэшированный ввод). Без доступного провайдера аудит завершается ошибкой (REV-45); детерминированная критика применяется только после 3 неудачных реальных вызовов (`aiFallbackUsed: true`, событие `token_usage` не пишется); она не оценивается: критерий дизайна исключается из итоговой оценки, а в `Audit.measurementErrors` пишется `design` с причиной (REV-101).
-   * **Группировка секций (REV-113):** параллельно с критикой тот же класс провайдеров (`VISION_LLM_PROVIDER`, иначе `MVP_LLM_PROVIDER`, первый ключ, CLI) через `LlmClient` получает контур страницы (до 600 пронумерованных кусков) и до 6 тайлов полного desktop-скриншота 1440×1800 и отвечает только id (`SiteGroupingAnswerSchema`). `readPageSections` собирает секции по id и сохраняет их в `Audit.siteSections` с `source: 'llm'`. Чтение правилами REV-109 во время работы не сохраняется и не перестраивается (REV-132): при сбое секций нет, причина — в `Audit.siteSectionsError` и `Audit.siteSectionsErrorReason` (`SITE_GROUPING_FAILURES`: `not_configured`, `call_failed`, `invalid_answer`, `ineligible` — чтение модели не проходит `rebuildEligibility`), плюс `measurementErrors` `sections`. Признак устаревшего шрифта берет типографику из сырых фактов страницы (`PageSectionsResult.typography`), без модели. Токены — событие `token_usage` со стадией `audit_section_grouping`.
 
 #### 1.2. Структура скоринга (Composite Score Formula):
 $$\text{Total Score} = 0.35 \times S_{\text{Design/UX}} + 0.25 \times S_{\text{Performance}} + 0.20 \times S_{\text{Accessibility}} + 0.20 \times S_{\text{Standards/SEO}}$$
@@ -259,24 +260,21 @@ $$\text{Total Score} = 0.35 \times S_{\text{Design/UX}} + 0.25 \times S_{\text{P
 
 Модуль решает сложную инженерную задачу: не просто сгенерировать абстрактный лендинг, а создать **премиальную версию сайта конкретного бизнеса**, сохранив его айдентику (цвета, логотип, тексты, перечень услуг), но упаковав это в современный UX-каркас с конверсионными блоками.
 
+С REV-135 страницу MVP проектирует и пишет модель (один HTML-документ с CSS), а код держит факты: решает, что модель читает, сам подставляет каждый контакт, отклоняет небезопасный ответ, помечает факты, которых нет на исходном сайте, и измеряет результат. Перестройка оригинала, модернизация, группировка секций, Bento-макеты и слой своего дизайна удалены в REV-141.
+
 ```mermaid
 flowchart TD
-    AuditData[Данные аудита + DOM] --> TokenExtractor[Brand Token Extractor]
-    
-    subgraph TokenExtractor [Экстрактор ДНК бренда]
-        Pal[Доминирующие цвета: Primary, Secondary, Accent]
-        Logo[Логотип: SVG/High-res PNG]
-        Copy[Контент: Телефон, Адрес, Список услуг, УТП]
-        Fonts[Семейства шрифтов: Засечки / Без засечек]
-    end
-
-    TokenExtractor --> AICodeGen[MvpContentAgent: тексты на языке сайта, Strict Grounding]
-    AICodeGen -->|Провайдер/модель, выбранные оператором| AICodeGen
-    AICodeGen --> CodeAssembly[Bento-шаблон: HTML + локализованный UI-текст]
-    CodeAssembly --> Completeness[Проверка полноты: MVP против данных исходного сайта]
-    Completeness --> StaticDeploy[Деплой в S3 revamp-demos по постоянному previewSlug]
-    StaticDeploy --> OpenGraph[Генерация превью-скриншота До / После]
-    OpenGraph --> Review[Lead.status = NEEDS_APPROVAL]
+    AuditData[Данные аудита: контент, услуги, контакты, бренд, картинки, скриншот] --> Brief[buildMvpSourceBrief: бриф без значений контактов]
+    Brief --> Gen[MvpPageGenerator: Vision LLM пишет страницу]
+    Gen -->|Провайдер/модель, выбранные оператором| Gen
+    Gen --> Check{checkMvpPage}
+    Check -->|отклонено, один повтор с причинами| Gen
+    Check -->|отклонено дважды / нет провайдера / вызов упал| Fail[MVP_PAGE_FAILURES: ничего не публикуется]
+    Check -->|принято| Grounding[checkMvpGrounding: флаги фактов]
+    Grounding --> Finish[finishMvpPage: контакты, SEO, цвета и шрифты оператора, форма записи, трекер]
+    Finish --> Upload[S3 revamp-demos: index.html + versions/n.html]
+    Upload --> Measure[Стандарты, скорость, полнота, баннер До / После]
+    Measure --> Review[Lead.status = NEEDS_APPROVAL]
 ```
 
 #### 2.1. Спецификация пайплайна генерации:
@@ -290,32 +288,24 @@ flowchart TD
    * Извлечение логотипа: поиск `<link rel="icon">`, селекторов `header img`, `nav svg`, `a[href="/"] img`.
    * Извлечение смысловых блоков (NLP/Regex): телефон, WhatsApp, email, физический адрес, график работы, прайс-лист/услуги, блок отзывов.
 
-2. **Выбор компонентной сетки (Design System & Bento Layout):**
-   * Используется модульная библиотека современных адаптивных секций на Tailwind CSS:
-     - **Sticky Modern Header:** Логотип + Кнопка быстрого вызова + CTA «Записаться».
-     - **Hero Section:** Усиленное УТП (переписанное через AI под формулу боли/выгоды) + форма мгновенного захвата контактов + социальные доказательства (бейджи Яндекс/Google карт).
-     - **Bento Grid Services:** Карточки ключевых услуг бизнеса с современными иконками (Lucide/Heroicons).
-     - **Trust & Reviews Block:** Интерактивная карусель отзывов клиентов.
-     - **Interactive Booking Widget:** Интерактивное модальное окно для записи на прием / расчета стоимости.
-     - **Footer & Location Map:** График работы, кликабельная интерактивная карта.
+2. **Бриф (`buildMvpSourceBrief`, `mvp-source-brief.ts`, чистая функция, REV-136):**
+   * Единственное место, где решается, что видит модель: `business` (название, ниша, город, URL), `language` (`extractedContent.language`), `services`, `copy` (title, meta description, H1, заголовки, абзацы, пункты услуг, отзывы, рейтинг, год основания — только извлеченное), `brand` (цвета, шрифты, логотип), `images` (картинки оригинала без размеров, без логотипа, без повторов), `placeholders` (по одному на проверенный контакт, `booking` всегда). Лимиты — `MVP_BRIEF_LIMITS` (30 услуг, 40 заголовков, 60 абзацев, 30 пунктов услуг, 10 отзывов, 24 картинки, 12 000 символов текста). Значений контактов в брифе нет; `MvpSourceBriefSchema` проверяет его перед каждым вызовом.
+   * **Язык сайта (REV-25, REV-116):** экстрактор читает язык от самого точного источника: `<html lang>`, затем `<meta http-equiv="content-language">`, затем детерминированная догадка по тексту (стоп-слова и буквы, только en/ru/be/pl/lt, без LLM; нет явного победителя — нет языка) и записывает источник в `extractedContent.languageSource` (`SITE_LANGUAGE_SOURCES`: `html` | `meta` | `text`). Модель ставит `<html lang>` брифа (английский — только когда язык неизвестен) и не переводит текст; текст формы записи, которую добавляет код, локализован для en, ru, be, pl, lt (для прочих языков — английский).
 
-   * **Только реальные данные (REV-23):** шаблон не содержит выдуманных значений по умолчанию. Кнопка звонка, полоса доверия, отзывы, часы работы и контакты отображаются только при наличии извлеченных данных. Добавлены секции «О нас», hero-изображение, галерея и соцсети; адрес ведет на Google Maps. Бледный основной цвет заменяется читаемым фирменным или затемняется до контраста 3:1.
-   * **Язык сайта (REV-25, REV-116):** экстрактор читает язык от самого точного источника: `<html lang>`, затем `<meta http-equiv="content-language">`, затем детерминированная догадка по тексту (стоп-слова и буквы, только en/ru/be/pl/lt, без LLM; нет явного победителя — нет языка) и записывает источник в `extractedContent.languageSource` (`SITE_LANGUAGE_SOURCES`: `html` | `meta` | `text`). `<html lang>` получает BCP 47-тег исходного сайта (английский — только когда язык неизвестен), фиксированный UI-текст шаблона (подписи секций, форма, футер) и детерминированный fallback локализованы для en, ru, be, pl, lt (для прочих языков — английский UI при корректном `lang`).
-   * **Варианты макета (REV-54):** вместо одной Bento-структуры шаблон рендерит один из четырех макетов (`MVP_LAYOUT_VARIANTS`): `bento` (исходный, по умолчанию и для старых MVP), `split` (hero из текста и фото, галерея сразу после hero, услуги плитками), `editorial` (типографический, заголовки с засечками, сначала «О нас», услуги нумерованным списком) и `compact` (короткая визитка: темный hero с проверенными контактами рядом с заголовком, компактные плитки услуг). Все макеты выводят одни и те же проверенные данные; меняются только разметка, CSS и порядок секций. Применяется CSS только выбранного макета (`<style id="revamp-layout-css">`); CSS, hero и блок услуг остальных макетов лежат в инертных `<template data-revamp-layout="…">` для живого переключения (REV-84). Порядок секций задает `LAYOUT_SECTION_ORDER`.
-   * **Выбор макета** детерминирован (`layout-selection.service.ts`, без LLM) и делается в `deploy-queue` по данным аудита: сайт с ≤2 услугами или одностраничная визитка с ≤4 услугами → `compact`; визуальные ниши (`restaurant`, `beauty`, `fitness`, `construction`, `auto`) с hero-фото и ≥2 изображениями → `split`; экспертные ниши (`legal`, `medical`, `dental`) с ≥6 абзацами текста → `editorial`; прочие сайты с hero-фото и ≥6 изображениями → `split`; блок «О нас», ≥8 абзацев и <4 изображений → `editorial`; иначе `bento`. Результат валидируется `MvpLayoutSelectionSchema` и сохраняется в `MvpProject.layout` (`variant` + коды причин, например `rule:visual_niche`, `images:8`); перегенерация по тому же аудиту дает тот же макет. Дашборд показывает макет чипом в инспекторе.
-   * **Макет по структуре оригинала (REV-104):** аудит в десктопном контексте читает главную страницу в DOM (`collectSiteLayoutInPage`, `site-layout.service.ts`, без LLM): раскрывает обертки до блоков верхнего уровня (шапка, подвал и плавающие виджеты исключаются, в том числе `div.header` / `#footer`), определяет вид каждого блока по заголовку, затем по id и классам, затем по структуре (карта, форма, цитаты, цены, фото), первый экран (фото сбоку / фоном / слайдер, выравнивание заголовка, тон фона по яркости и насыщенности), шапку (число пунктов меню, логотип по центру, липкость, кнопка) и плотность (медиана пустого места секций). `readSiteLayout` валидирует результат (`SiteLayoutSchema`) и пишет `Audit.siteLayout`, а если блоков меньше двух или первый блок не на первом экране — `Audit.siteLayoutError`. `deriveMvpLayout` в `deploy-queue` выбирает вариант (маленькая визитка → `compact`; фото на первом экране и hero-фото → `split`; текстовый hero слева на экспертном или текстовом сайте → `editorial`; иначе `bento`) и спецификацию дизайна `MvpProject.layout.design`: порядок секций как у оригинала, сторона фото или `behind`, выравнивание, тон первого экрана, плотность, шапка. Шаблон рендерит `mergeDesigns(layout.design, design)` — свой дизайн оператора поверх выведенного; ручной выбор макета (`manualMvpLayout`) и перегенерация сохраняют выведенный вид, а перегенерация — и выбранный оператором вариант. Без прочитанной структуры работает прежний выбор по правилам с кодом `site_layout:unread`, и чип макета говорит об этом.
-   * **Свой дизайн (REV-92):** `apps/workers/src/templates/design.ts` превращает `MvpProject.design` в `<style id="revamp-design-css">` после CSS макета (все правила `!important`, стили элементов с префиксом `body.revamp-designed`, поэтому перекрывают тему первого экрана), порядок секций (`resolveSectionOrder`: сначала перечисленные в дизайне, затем остальные в порядке макета, затем прочие блоки) и разметку своих блоков (`<section data-revamp-section="block-N">`, CTA ведет на `#booking`). Скрытые секции не рендерятся, скрытая полоса доверия не попадает ни в первый экран, ни в `<template>` других макетов. Скрипт живой смены макета получает порядок секций уже с учетом дизайна. Шрифты — только системные стеки. Без дизайна (или с пустым) HTML побайтно совпадает с прежним.
-   * **Свой CSS (REV-93):** `design.customCss` выводится отдельным `<style id="revamp-custom-css">` после стилей дизайна. `sanitizeMvpCss` (`templates/css-sanitizer.ts`, PostCSS) принимает CSS только целиком: селекторы с хуками `data-revamp-*`, классами или id страницы (без `html`, `body`, `:root` и чужих атрибутов); только `@media`, `@supports`, `@keyframes`; без `url()`, `image-set()`, `expression()`, `attr()`, экранирования и `<`; без скрытия (`display:none`, `visibility`, прозрачность ниже 0,2, нулевые размеры, `scale(0)`, `clip`/`mask`, большие отрицательные смещения, перекрывающие псевдоэлементы); прозрачный текст только с `background-clip: text`; `content` только `""`; `position: fixed/sticky` только у `.site-header`. Агент правок проверяет CSS перед сохранением, шаблон — повторно при рендере (не прошедший проверку CSS не выводится, публикация не падает).
-   * **Ручная смена макета (REV-84):** на шаге «Прототип» оператор выбирает любой из четырех макетов. Дашборд отправляет в песочницу `postMessage({ type: 'REVAMP_SET_LAYOUT', layout, animate })`; скрипт страницы подставляет CSS, hero и блок услуг из `<template>`, переставляет секции и анимирует переход через View Transitions (секции и hero плавно переезжают, старый и новый вид перетекают с легким размытием; без View Transitions — затухание через Web Animations; при `prefers-reduced-motion` — мгновенно). iframe не перезагружается. Выбор сохраняется `PATCH /mvp/:id/layout` в `MvpProject.layout` с причиной `rule:manual` (факты аудита сохраняются), после чего `deploy-queue` перерисовывает опубликованный бандл (`mode: 'relayout'`). LLM не вызывается.
-   * **Перестройка оригинала (REV-110):** вариант `original` рендерит главную страницу оригинала по секциям из `Audit.siteSections`, без LLM. `planRebuild` (`rebuild-plan.service.ts`, чистая функция) принимает все решения и возвращает `IRebuildPlan` (`RebuildPlanSchema`): секции по порядку, ссылки (на другие страницы отбрасываются, призывы и хосты записи — на `#booking`), встраивания из списка, форма записи вместо формы оригинала (`booking:replaced`, иначе `booking:appended` перед подвалом; форма подвала не занимает слот и записывается как пропущенное встраивание `second_form`), проверенные контакты и настройка (контраст `contrast:<i>`, затемнение `overlay:<i>`, `alt:<n>`, `font:body-16`, `line-height:1.5`, `collapse:<i>`, `h1:hidden`, `footer:added`). `renderRebuild` (`templates/rebuild/`: `index.ts`, `sections.ts` — один рендерер на расположение, `chrome.ts` — шапка и подвал, `styles.ts`, `script.ts` — слайдер) превращает план в разметку; стили задаются переменными плана (`--rb-*`), а не CSS под сайт. Список, где каждый элемент — одна простая строка (без заголовка, фото, подзаголовка, цены и оценки), рисуется маркированным `<ul class="rb-list rb-bullets">`, по левому краю и в центрированной секции (REV-122). Общие части (форма записи, трекер, фавикон, `escapeHtml`) вынесены в `templates/shared/`, вывод Bento не изменился. Единая точка входа — `renderMvp` (`services/mvp-render.ts`): `rebuildEligibility` (`@revamp/validation`) проверяет аудит (`rebuild:unread`, `rebuild:no_content`, `rebuild:low_coverage` при покрытии < `REBUILD_MIN_COVERAGE` 0,85, `rebuild:flat` (REV-112) при плоском чтении: на странице от `REBUILD_FLAT_MIN_PAGE_CHARS` 1500 знаков одна секция `hero`/`content` держит больше `REBUILD_MAX_SECTION_SHARE` 0,5 текста секций или заголовок есть меньше чем у `REBUILD_MIN_HEADING_SHARE` 0,25 из них; текст считает `siteSectionChars` из `@revamp/validation`, общий с покрытием читателя), неверный план (`rebuild:invalid`) или HTML больше 300 КБ (`rebuild:too_large`); с REV-132 и группировка: `grouping:<причина>` или `grouping:rules_reading` для чтения не моделью (аудиты до REV-132). Возврата к Bento нет (REV-132): `renderMvp` бросает `MvpRenderError` (`IMvpRenderFailure`: `code` `MVP_REBUILD_UNAVAILABLE` | `MVP_MODERNIZE_UNAVAILABLE`, `reason`, `level`, `message`, `at`), задача деплоя падает окончательно (`UnrecoverableError`, без ретраев). Генерация пишет код и причину в `Lead.generationFailure`; `relayout-mvp` ничего не загружает (опубликованная страница остается), пишет `MvpProject.renderFailure` и при сбое модернизации возвращает сохраненный уровень к опубликованному (только если выбор не менялся); следующая публикация снимает `renderFailure`. Оператор может сгенерировать MVP шаблоном: `POST /mvp/generate { layout }` с вариантом Bento передается в задачу деплоя как ручной выбор. Тот же путь у `deploy-queue` (генерация) и `relayout-mvp` (палитра, макет): при смене рендерера (перестройка ↔ Bento) обновляется `MvpProject.editedAt`, чтобы превью перезагрузилось. Новая генерация без палитры оператора оставляет цвета Bento прежними; у перестройки сохраненный `colorPalette.primary` — цвет кнопок сайта. **Правка перестройки (REV-111):** `MvpProject.rebuildEdit` (`IRebuildEdit`, `RebuildEditSchema`) — порядок и скрытие секций по id `s-<index>`, удаленные куски `s-<i>.t<n>|i<n>|x<n>`, стиль секции (`background`: `original`/`page`/`tinted`/`brand`/`dark`, `align`, `density`), тема (`font`, `density`, `corners`, `headingCase`), `customCss` через `sanitizeMvpCss` (у каждой секции `data-revamp-section`, хуки `REBUILD_CSS_HOOKS`, липкой может быть и `.rb-header`) и `auditId`. `planRebuild` применяет правку при планировании: пропуски `hidden` / `dropped` (новые виды `text`, `item`), коды `edit:order`, `edit:style:<i>`, `edit:theme`, `edit:css-dropped`; без правки план прежний. Правка для другого аудита не применяется (`editForAudit`), перегенерация по новому аудиту снимает ее. `mvp-edit-queue` для `original` вызывает `RebuildEditService` вместо агента правок Bento, сброс снимает `rebuildEdit`. `relayout-mvp` после публикации пересчитывает `completenessReport` кодом (`check`, без LLM) — для обоих рендереров. `PATCH /mvp/:id/layout` с `original` для аудита, который нельзя перестроить, — `409 MVP_REBUILD_UNAVAILABLE` (`details.reason`, при сбое модели — `details.error`); новый выбор снимает `renderFailure`, тот же выбор после сбоя ставится в очередь заново. **Уровень модернизации (REV-114):** `layout.rebuildLevel` (`faithful` | `modern`, только у `original`) выбирает `rebuildLevelFor`: ручной (`modernize:manual`) сохраняется, иначе `modern` при `Audit.siteEra.dated`, иначе `faithful`; причины `modernize:dated`, `dated:<балл>`, `modernize:manual` (`modernize:default` бывает только у MVP до REV-132 и снимается при следующей отрисовке). Признаки считает `readSiteEra` (`site-era.service.ts`, чистая функция) после чтения секций: сигналы `parseHomePage` (REV-98) с уже загруженной страницы плюс `contentWidth` и долю блоков на всю ширину из `collectSiteSectionsInPage` и шрифт тела; вес и порог — `SITE_DATED_SIGNS`, `SITE_DATED_THRESHOLD`. При `modern` воркер (`deploy.worker`, `relayout-mvp` при первом переключении) берет `MvpProject.modernize` этого аудита (`modernizeForAudit`) или вызывает `RebuildModernizeService` (текст, без скриншотов, провайдер копирайтинга; Zod + `checkRebuildEdit`, одна повторная попытка) и сохраняет результат: дизайн модели (`source: 'llm'`) или сбой без дизайна (`source: 'failed'`, `error`: `not_configured` | `call_failed` | `invalid_answer`; REV-132). `defaultModernDesign` — только стартовая точка для модели. Сохраненный сбой или `source: 'default'` до REV-132 не применяются: следующая задача снова вызывает модель (в одной задаче — один раз). Без дизайна модели отрисовка на `modern` падает с `MVP_MODERNIZE_UNAVAILABLE`, без перехода к `faithful`; при непроходящем `rebuildEligibility` модель не вызывается. `renderMvp` передает `modernize.design` только на уровне `modern`; `planRebuild` объединяет его с правкой оператора (`mergeRebuildEdits`, у оператора приоритет по полю; `order`, `hidden`, `dropped`, `customCss` — только оператора), коды вида — `modernize:*` (`cards:<i>`, `side:<i>`, `fill:<i>`, `hero-photo:<s-i.mn>`, `hero-cta`, `type`), оператора — `edit:*`. Секция получает `mediaFit` / `mediaMax` (`RebuildPlanSchema`: 1..1200), рендерер пишет `data-media-fit="fill"` и `--rb-media-max`. `MvpProject.rebuild.level` пишется при каждой перестройке, `editedAt` ставится при смене уровня.
-   * **Иконка страницы (REV-56):** каждый макет объявляет `<link rel="icon">` в `<head>`: URL логотипа сайта, если он известен, иначе монограмма (извлеченная или сгенерированная из инициалов) как `data:image/svg+xml` URI. Поэтому MVP, открытый во вкладке, не запрашивает `/favicon.ico` с корня хранилища (MinIO отвечает на такой запрос 403).
-
-3. **AI-адаптация контента (Copywriting Uplift):**
-   * LLM переписывает тексты исходного сайта (`Audit.extractedContent`) в емкие, продающие офферы на **языке исходного сайта** (`outputLanguage`), сохраняя 100% фактической информации. Телефоны, e-mail и адреса LLM не выводит вовсе: они подставляются из проверенных данных.
-   * Каждый запуск генерирует новые тексты; сохраненные ранее на аудите не переиспользуются.
-   * Перед Zod-валидацией строки обрезаются до лимитов схемы (REV-34), поэтому одно слишком длинное поле не отбрасывает весь ответ.
-   * **Выбор провайдера и модели (REV-30, REV-32):** оператор выбирает провайдера (`anthropic`, `openai`, `gemini`, `claude-cli`) и модель в диалоге генерации; выбор действует только на эту задачу, иначе используется значение по умолчанию воркера (`MVP_LLM_PROVIDER`, либо первый найденный API-ключ). Провайдер с ошибкой вызова откатывается на детерминированные тексты и **никогда** не переключается на другой платный провайдер. Провайдер без ключа или отсутствие провайдера — ошибка задачи (REV-45). `MvpProject` хранит выбранные (`requestedProvider/Model`) и фактические (`provider`, `modelUsed`) значения.
+3. **Генерация страницы (`MvpPageGenerator`, `mvp-page-generator.ts`, `MVP_PAGE_SYSTEM_PROMPT`, REV-137):**
+   * Один Vision-вызов через `LlmClient`: бриф (JSON), разрешенные плейсхолдеры и до 3 тайлов десктопного скриншота аудита. Ответ — один HTML-документ; обрамление кодом снимается. Промпт и проверки — в [`AGENTS.md`](AGENTS.md), Агент 2.
+   * Модель свободно выбирает структуру, секции и вид; текст — только из брифа, без новых фактов; контакты и запись — только плейсхолдеры `MVP_PLACEHOLDERS`; все цвета и шрифты — через переменные `MVP_THEME_VARS` в `:root`; картинки — только из брифа; без скриптов, форм, iframe и внешних ресурсов, кроме Google Fonts.
+   * `checkMvpPage` (`mvp-page-check.ts`) отклоняет ответ с кодами `MVP_PAGE_CHECKS`; отклоненный ответ повторяется один раз с причинами и самой страницей. Два отклонения, отсутствие провайдера или упавшие вызовы — сбой `MVP_PAGE_FAILURES` (`not_configured`, `call_failed`, `invalid_page`): `MvpPageUnavailableError` (`UnrecoverableError`), `Lead.generationFailure = { code: 'MVP_PAGE_UNAVAILABLE', reason, message, at }`. Запасной страницы нет.
+   * `checkMvpGrounding` (`mvp-grounding.ts`) извлекает из видимого текста числа и имена и помечает те, которых нет в тексте брифа (`IMvpGroundingFlag`: `kind` `number` | `name`, `text`, `context`). Флаги не отклоняют страницу; они сохраняются в `MvpProject.grounding` и показываются оператору.
+   * **Выбор провайдера и модели (REV-30, REV-32):** оператор выбирает провайдера (`anthropic`, `openai`, `gemini`, `claude-cli`) и модель в диалоге генерации; выбор действует только на эту задачу, иначе `pageProvider()`: `VISION_LLM_PROVIDER`, иначе `MVP_LLM_PROVIDER` или первый найденный API-ключ, иначе локальный CLI. Провайдер с ошибкой вызова **никогда** не переключается на другой платный провайдер. `MvpProject` хранит выбранные (`requestedProvider/Model`) и фактические (`provider`, `modelUsed`) значения.
    * **Локальный Claude Code CLI (REV-30):** провайдер `claude-cli` запускает `claude -p` в headless-режиме под аккаунтом, в который залогинен CLI (без API-ключа): без инструментов, без MCP, без пользовательских настроек, во временной рабочей папке; промпт передается через stdin.
+   * Задача `ai-gen-queue` передает принятую страницу, тему и флаги в `deploy-queue` (`IDeployJobData.page`); задача без страницы отклоняется (REV-141).
+
+3a. **Завершение страницы (`finishMvpPage`, `mvp-page-finish.ts`, чистая функция, REV-138):** выполняется при каждой публикации из сохраненной сырой страницы:
+   * плейсхолдеры заполняются проверенными контактами (`tel:`, `mailto:`, поиск в Google Maps, `#booking`);
+   * поисковые теги модели (мета-описание, `og:*`, `twitter:*`, canonical, иконки) заменяются тегами `buildMvpSeo` (REV-118) и иконкой: логотип сайта, иначе монограмма как `data:image/svg+xml` URI (REV-56), поэтому MVP не запрашивает `/favicon.ico` с корня хранилища (MinIO отвечает 403);
+   * цвета и шрифты оператора (`MvpProject.controls` поверх `theme`) — завершающий `<style id="rv-controls">:root{…}</style>` и ссылка Google Fonts для выбранной пары;
+   * форма записи (`templates/shared/booking.ts`) в конце `<main>` (иначе перед подвалом, иначе в конце `<body>`), ее стили на переменных `--rv-*`, ее скрипт, трекер и скрипт превью (`previewScript`: по `REVAMP_SHOW_TEXT` из дашборда прокручивает к тексту и обводит его, REV-140).
 
 4. **Проверка полноты MVP (REV-36, REV-37):**
    * После рендеринга `MvpCompletenessService` разбирает HTML (`happy-dom`, без нового краулинга) и сверяет его с данными, извлеченными на аудите.
@@ -323,21 +313,28 @@ flowchart TD
    * Статусы: `present`, `missing`, `altered` (есть, но другое), `not_in_source` (на исходном сайте нет), `unsourced` (контакт в MVP, которого нет на исходном сайте — вероятно, выдуман).
    * Если LLM настроен (`MVP_COMPLETENESS_LLM=true`), поля судит LLM: каждый вердикт должен дословно цитировать MVP. Код принимает вердикт, только если цитата есть в тексте, ссылках или URL изображений MVP, телефон/e-mail совпадают с источником после нормализации и имеют `tel:`/`mailto:`-ссылку, а «missing» не перекрывает найденное кодом совпадение. `not_in_source` и итоговый балл (веса 3/2/1 по уровням) всегда считает код.
    * При отсутствии провайдера, таймауте (`MVP_COMPLETENESS_LLM_TIMEOUT_MS`), ошибке или невалидном ответе после одного повтора используется сравнение только кодом; причина сохраняется в `llmError`. Сбой самого сравнения дает отчет `unverified` и никогда не роняет задачу.
-   * Отчет валидируется Zod, сохраняется в `MvpProject.completenessReport` и пересчитывается при каждой генерации, а при каждой повторной публикации (правка, палитра, макет, сброс) — кодом без LLM (REV-111), чтобы описывать опубликованную страницу. Отчет носит рекомендательный характер: он ничего не одобряет, не блокирует и не отправляет.
+   * Отчет валидируется Zod, сохраняется в `MvpProject.completenessReport` и пересчитывается при каждой генерации, а при каждой повторной публикации (изменение, цвета и шрифты, восстановление версии) — кодом без LLM, чтобы описывать опубликованную страницу. Отчет носит рекомендательный характер: он ничего не одобряет, не блокирует и не отправляет.
 
 5. **Компиляция, изоляция и деплой:**
    * Сборка страницы в один оптимизированный бандл (HTML + inline CSS/JS).
    * Инжекция аналитического скрипта трекинга (`revamp-tracker.js`): регистрирует факт входа владельца, скролл, клики по кнопкам демо.
    * MVP раздается с хоста хранилища (MinIO / `PREVIEW_DOMAIN`), поэтому скрипт подключается по абсолютному адресу API (REV-52): `<script src="{PUBLIC_API_URL}/track/revamp-tracker.js" data-api="{origin PUBLIC_API_URL}" data-token="…">`, и события уходят на `{PUBLIC_API_URL}/track/mvp-event`. Относительный путь `/api/v1/...` разрешился бы в хранилище (403). Без `PUBLIC_API_URL` скрипт не встраивается. Адрес фиксируется при генерации: после его смены MVP нужно перегенерировать.
    * Публикация в бакет `revamp-demos` по ключу `v/{previewSlug}/index.html` (slug — транслитерированное название бизнеса + 6 последних символов `leadId`).
+   * **Версии (REV-138):** каждая генерация, изменение и восстановление сохраняет сырую страницу (плейсхолдеры не заполнены) как `v/{previewSlug}/versions/{n}.html` и запись `MvpProject.versions` (`n`, `kind` `generate` | `change` | `restore`, `instruction?`, `from?`, `jobId?`, `provider?`, `model?`, `storagePath`, `createdAt`). Хранится не больше `MVP_MAX_VERSIONS` (20): самая старая удаляется из хранилища и записи. `index.html` перезаписывается, адрес превью не меняется. Стандарты, скорость, полнота, флаги, `editedAt` и новая версия пишутся одним обновлением.
    * Автоматический снимок созданного лендинга через Playwright для формирования баннера «До/После» (Split-screen Comparison, 1200x630). На баннере только измеренные значения (REV-126): LCP, нарушения axe и балл стандартов оригинала (`comparableStandardsScore`), балл стандартов MVP (`checkMvpStandards` до выгрузки, тот же, что пишется в `MvpProject.standards`); неизмеренное опускается, без скриншота оригинала — надпись «not available».
 
 6. **Перегенерация (REV-31):**
    * Правила `mvpGenerationMode` (`@revamp/validation`): из `AUDITED` — первая генерация; из `NEEDS_APPROVAL` — только с `forceRegenerate`; после постановки письма в отправку (`SCHEDULED` и далее) и во время генерации — запрещено (409).
    * Существующий проект сохраняет `previewSlug`: объекты в бакете перезаписываются (`Cache-Control: no-cache`), уже отправленная ссылка остается рабочей. `MvpProject` один на лид; обновляются `generatedAt` и `generationCount`, а превью в дашборде сбрасывает кэш по `Lead.mvpGeneratedAt`.
-   * Лид остается в `GENERATING`, пока деплой не опубликует новое превью. После исчерпания ретраев (или сразу при окончательной ошибке `UnrecoverableError`, REV-132) лид возвращается в `AUDITED` (первая генерация) или `NEEDS_APPROVAL` (предыдущий MVP цел), а причина пишется в `Lead.generationError`; сбой перестройки или модернизации — еще и код с причиной в `Lead.generationFailure`.
+   * Лид остается в `GENERATING`, пока деплой не опубликует новое превью. После исчерпания ретраев (или сразу при окончательной ошибке `UnrecoverableError`) лид возвращается в `AUDITED` (первая генерация) или `NEEDS_APPROVAL` (предыдущий MVP цел), а причина пишется в `Lead.generationError`; если страницу не дала модель — еще и код `MVP_PAGE_UNAVAILABLE` с причиной (`MVP_PAGE_FAILURES`) в `Lead.generationFailure`.
    * Дашборд (REV-53): `MvpPreviewFrame` закрывает превью оверлеем от клика «Перегенерировать» до загрузки новой версии в iframe. Мутация генерации имеет ключ `['generate-mvp']` и остается в ожидании, пока список лидов не покажет `GENERATING` (`useIsMvpGenerationPending`), поэтому разрыва между кликом и оверлеем нет. Если URL превью не изменился (сбой), оверлей снимается сразу, а если новая версия не загрузилась, то через 20 с. `sandbox` iframe не меняется.
 
+
+7. **Изменения опубликованной страницы (REV-139, `mvp-page-queue`):** только в `NEEDS_APPROVAL` и только у страницы модели (есть `page`/`theme`; MVP прежнего генератора — `409 MVP_PREVIOUS_GENERATOR`, только перегенерация).
+   * `change` (`POST /mvp/:id/edit`): генератор в режиме `change` получает текущую сырую страницу и слова оператора и возвращает всю страницу; те же проверки и повтор. Неудача ничего не публикует (`502 MVP_EDIT_FAILED` с причиной).
+   * `controls` (`PATCH /mvp/:id/tokens`): цвета (пять ролей, текст на фоне и на поверхности не ниже `MVP_MIN_CONTRAST` 4,5:1) и пара шрифтов из `MVP_FONT_CHOICES` сохраняются в `controls` и публикуются без вызова модели и без новой версии.
+   * `restore` (`POST /mvp/:id/versions/:n/restore`): сырая страница версии `n` проверяется по текущему аудиту и публикуется с текущими `controls` как новая версия `restore`.
+   * API ждет задачу до 420 с (изменение) или 120 с (цвета, шрифты, восстановление) и передает воркеру срок (`deadline`); воркер начинает публикацию, только если до срока осталось больше `PUBLISH_MARGIN_MS` (90 с), иначе задача ничего не меняет, а API отвечает `504 MVP_EDIT_TIMEOUT` (с пометкой, что изменение еще может быть опубликовано, если задача уже публикует).
 ---
 
 ### Модуль 3: Модуль персонализированных писем (Email Outreach)
@@ -426,7 +423,7 @@ sequenceDiagram
    * Переключение между табличным представлением (MUI DataGrid с фильтрацией по скорингу, нише, городу) и Kanban-доской статусов.
 2. **Ревью лида в три шага (`LeadReview`, `/leads/:id`, REV-77):** на экране один шаг, внизу панель действий (`ReviewActionBar`) с одним основным действием на шаг (Далее, Далее, Одобрить и отправить) и «Отклонить лид» на каждом шаге. Одобрение есть только на шаге «Письмо» и включается через 500 мс после его открытия; все шаги смонтированы, поэтому правки письма (`useEmailDraft`) и iframe переживают переходы.
    * Шаг 1 «Аудит» (`AuditStep`): скриншот исходного сайта (Desktop / Mobile), метрики LCP, a11y, мобильность; под каждым значением строка о том, как оно измерено и какие значения хорошие (LCP на телефоне 375px, хорошо до 2,5 с; число нарушенных правил WCAG 2.1 A/AA по axe-core, а не элементов; оценка мобильной версии от Vision-модели по скриншотам), REV-103. Колонка находок (380px) стоит рядом со скриншотом только с брейкпоинта `xl` (1536px, `AUDIT_ROW_BREAKPOINT`); уже — находки идут под скриншотом во всю ширину, чтобы рядом со списком очереди (380px) они не сжимались (REV-83).
-   * Шаг 2 «Прототип» (`PrototypeStep`): интерактивный `<iframe sandbox="allow-scripts allow-same-origin">` со сгенерированным MVP, тулбар брейкпоинтов (Desktop / Tablet / Mobile), перегенерация и палитра.
+   * Шаг 2 «Прототип» (`PrototypeStep`): интерактивный `<iframe sandbox="allow-scripts allow-same-origin">` со сгенерированным MVP, тулбар брейкпоинтов (Desktop / Tablet / Mobile), флаги фактов страницы со ссылкой «Показать в превью», «Что изменилось» (только измеренное) и плавающая панель «Инструменты дизайна»: изменение своими словами, цвета, шрифты, версии с восстановлением и перегенерация (REV-140).
    * Полностраничные скриншоты исходного сайта в прокручиваемом просмотрщике со ссылкой «Открыть в полном размере» (REV-21).
    * Чек-лист полноты MVP (`CompletenessChecklist`, REV-36/37): поле, значение на исходном сайте, значение в MVP, статус, кто решил (LLM или код), метод и модель проверки.
    * Кто написал тексты MVP: провайдер и модель (`MvpSourceChip`, REV-32).
@@ -494,7 +491,7 @@ erDiagram
         object extractedContent
         object screenshotUrls
         object cookieBannerHandled
-        object generatedContent
+        object siteEra
         boolean aiFallbackUsed
         Date completedAt
     }
@@ -507,10 +504,14 @@ erDiagram
         string fullPreviewUrl
         string storageHtmlPath
         string comparisonBannerUrl
-        object generatedContent
-        object colorPalette
+        string page
+        object theme
+        object controls
+        array grounding
+        array versions
+        object standards
+        object performance
         object completenessReport
-        object layout
         string provider
         string modelUsed
         string requestedProvider
@@ -518,9 +519,6 @@ erDiagram
         Date generatedAt
         number generationCount
         Date editedAt
-        object design
-        object rebuild
-        object rebuildEdit
         boolean isPublished
     }
 
@@ -576,7 +574,7 @@ interface ILead {
   comparisonBannerUrl?: string;
   mvpGeneratedAt?: Date;          // сброс кэша превью после перегенерации (REV-31)
   generationError?: string;       // причина последнего сбоя генерации (REV-31)
-  generationFailure?: IMvpRenderFailure;   // REV-132: код и причина, когда перестройку или модернизацию не дала модель (как MvpProject.renderFailure)
+  generationFailure?: IMvpRenderFailure;   // REV-137: { code: 'MVP_PAGE_UNAVAILABLE', reason: 'not_configured' | 'call_failed' | 'invalid_page', message?, at }, когда страницу не дала модель
   auditError?: string;            // причина окончательного сбоя аудита, одна строка (REV-44)
   createdAt: Date;
   updatedAt: Date;
@@ -661,18 +659,8 @@ interface IAudit {
     faviconUrl?: string;
   };
   extractedServices?: string[];
-  siteLayout?: {                  // REV-104: структура главной страницы оригинала, из DOM (SiteLayoutSchema)
-    sections: Array<{ kind: 'services' | 'pricing' | 'gallery' | 'about' | 'team' | 'reviews' | 'faq' | 'contact' | 'map' | 'other'; heading?: string }>;  // ниже первого экрана, по порядку, до 20
-    hero: { media: 'none' | 'side' | 'background' | 'slider'; mediaSide?: 'left' | 'right'; align: 'left' | 'center'; tone: 'light' | 'tinted' | 'dark' | 'brand' };
-    nav: { itemCount: number; centeredLogo: boolean; sticky: boolean; hasCta: boolean };
-    density: 'compact' | 'comfortable' | 'airy';
-  };
-  siteLayoutError?: string;       // REV-104: почему структуру не удалось прочитать; тогда макет выбирают правила
-  siteSections?: Mixed;           // REV-109: главная страница по секциям, из DOM (SiteSectionsSchema, лимиты SITE_SECTIONS_LIMITS): sections[{ index, role: header|hero|content|footer, kind, arrangement, columns?, mediaSide?, intro, items[{ title?, subtitle?, text[], image?, backgroundImage? (REV-110: фон-фото карточки или слайда), price?, rating? (0..5), links[] }], itemStyle?, extra[], images[], embeds[], style, truncated? }], typography?, skipped[{ index, reason: noise|empty|duplicate|cap|unassigned (REV-113), heading?, sample }], coverage{ pageChars, capturedChars, ratio, uncaptured[] }, source?: rules|llm (REV-113: кто прочитал — правила DOM или Vision-модель по id)
-  siteSectionsError?: string;     // REV-109: почему секции не удалось прочитать; аудит при этом не падает
-  siteSectionsErrorReason?: 'not_configured' | 'call_failed' | 'invalid_answer' | 'ineligible';   // REV-132: почему Vision-модель не дала секций; без нее перестройки нет
   siteEra?: Mixed;                // REV-114: насколько устарел вид главной страницы (SiteEraSchema): { dated, score, signs: SiteDatedSign[], contentWidth? }; dated — score >= SITE_DATED_THRESHOLD (3); из HTML и DOM, без LLM
-  siteEraError?: string;          // REV-114: почему признаки не удалось прочитать; аудит при этом не падает, уровень остается faithful
+  siteEraError?: string;          // REV-114: почему признаки не удалось прочитать; аудит при этом не падает, вердикта нет
   extractedContacts?: {           // REV-23: детерминированно с исходного сайта
     phone?: string; email?: string; address?: string; workingHours?: string;
     socialLinks: Array<{ platform: string; url: string }>;
@@ -696,7 +684,6 @@ interface IAudit {
     comparisonBanner?: string;
   };
   cookieBannerHandled?: { desktop?: string; mobile?: string }; // REV-33: dismissed:cmp:<platform> | dismissed:text | ... | not_found | timeout | error
-  generatedContent?: IMvpGeneratedContent; // последние тексты MvpContentAgent
   aiFallbackUsed?: boolean;
   errorMessage?: string;
   createdAt: Date;
@@ -714,51 +701,28 @@ interface IMvpProject {
   fullPreviewUrl: string;         // <S3_ENDPOINT>/revamp-demos/v/<slug>/index.html
   storageHtmlPath: string;        // v/<slug>/index.html
   comparisonBannerUrl?: string;   // banners/<slug>.webp, 1200x630
-  generatedContent: {
-    hero: { badge: string; headline: string; subheadline: string; primaryCtaText: string; secondaryCtaText: string };
-    about?: { heading: string; body: string };
-    servicesHeading?: string;
-    services: Array<{ title: string; description: string; lucideIconName: string }>;
-    trustSignals: Array<{ metric: string; label: string }>;
-    offerNotice: string;
-  };
-  colorPalette: { primary: string; secondary: string; accent: string };
   isPublished: boolean;
   generatedAt?: Date;             // REV-31
   generationCount?: number;       // REV-31
-  editedAt?: Date;                // REV-85: последнее изменение своими словами, опубликованное заново
-  design?: {                      // REV-92: свой дизайн, шаблон применяет его при каждом рендере
-    sectionOrder?: ('about' | 'services' | 'gallery' | 'reviews' | 'block-1' | 'block-2' | 'block-3')[];
-    hidden?: ('about' | 'services' | 'gallery' | 'reviews' | 'trust')[];   // первый экран, запись и контакты — никогда
-    hero?: { align?: 'left' | 'center'; order?: ('badge' | 'headline' | 'subheadline' | 'actions' | 'trust' | 'image')[]; imageSide?: 'left' | 'right' | 'behind' };  // behind — фото фоном под затемнением (REV-104)
-    header?: { layout?: 'standard' | 'centered'; links?: boolean };   // REV-104: логотип по центру, ссылки на секции в шапке
-    theme?: { font?: MvpDesignFont; density?: 'compact' | 'comfortable' | 'airy'; corners?: 'sharp' | 'soft' | 'rounded' | 'extra-round'; heroStyle?: 'light' | 'tinted' | 'dark' | 'brand' };
-    elements?: Partial<Record<MvpDesignElement, { size?, weight?, align?, transform?, tracking?, color?, background?, radius?, shadow?, border? }>>;
-    customCss?: string;           // REV-93: до 4 КБ, только после sanitizeMvpCss
-    blocks?: Array<{ id: 'block-1' | 'block-2' | 'block-3'; type: 'highlight' | 'features' | 'cta'; style?: 'plain' | 'tinted' | 'brand' | 'dark'; title: string; body?: string; items?: { title; text?; icon? }[]; buttonText?: string }>;
+  editedAt?: Date;                // REV-85, REV-139: последняя опубликованная перемена (изменение, цвета и шрифты, восстановление)
+  page?: string;                  // REV-138: сырая страница модели (плейсхолдеры не заполнены); нет у MVP прежнего генератора
+  theme?: {                       // REV-138 (MvpThemeSchema): значения MVP_THEME_VARS из :root страницы
+    primary: string; accent: string; bg: string; surface: string; text: string; fontHeading: string; fontBody: string;
   };
-  layout?: {                      // REV-54; нет у MVP, созданных до REV-54 (Bento)
-    variant: 'original' | 'bento' | 'split' | 'editorial' | 'compact';   // original — перестройка оригинала (REV-110)
-    reasons: string[];            // коды причин выбора: 'rule:image_rich', 'niche:dental', 'images:8'; 'rule:derived', 'site_layout:unread' (REV-104)
-    design?: MvpDesign;           // REV-104: вид, выведенный из структуры оригинала; `design` оператора накладывается поверх
-    rebuildLevel?: 'faithful' | 'modern';   // REV-114: только у original; нет значения — faithful; причины 'modernize:dated', 'dated:<балл>', 'modernize:manual' ('modernize:default' — только до REV-132)
-  };
-  rebuild?: {                     // REV-110 (MvpRebuildSummarySchema); есть, только если MVP отрендерен перестройкой, при Bento-рендере снимается ($unset)
-    coverage: number;             // Audit.siteSections.coverage.ratio
-    sections: number;             // сколько секций отрендерено
-    omitted: Array<{ what: 'section' | 'nav_link' | 'link' | 'embed' | 'image' | 'text' | 'item'; reason: string; sample?: string }>;   // до 80; секция, опустевшая после отбрасывания ссылок, — what 'section', reason 'empty'; скрытая оператором — reason 'hidden'; удаленный абзац / элемент — 'text' / 'item', reason 'dropped' (REV-111)
-    level?: 'faithful' | 'modern';   // REV-114: уровень, которым отрисована страница
-    tuning: string[];             // коды исправлений: 'contrast:3', 'overlay:1', 'alt:12', 'font:body-16', 'line-height:1.5', 'collapse:11', 'h1:hidden', 'booking:replaced', 'footer:added', 'seo:description' | 'seo:og' | 'seo:jsonld' (REV-118: тег, которого не было у оригинала), 'wall:9' (REV-122: заметка, не исправление — секция от `REBUILD_WALL_MIN_PARAGRAPHS` = 10 абзацев и больше чем в `REBUILD_WALL_MEDIAN_FACTOR` = 3 раза медианы остальных секций страницы, `textWalls`; вид `text-wall` в списке изменений); до 120
-    facts?: Array<{               // REV-119: измерения за кодами (у новых сводок всегда есть, хотя бы []; нет — сводка до REV-119)
-      code: string;                 // код из tuning
-      section?: string;             // заголовок секции на оригинале (нет — у секции нет заголовка)
-      from?: string | number; to?: string | number;   // цвет текста (contrast), размер шрифта в px (font:body-16), межстрочный интервал (line-height:1.5)
-      background?: string;          // фон, на котором проверен цвет (contrast)
-      ratioBefore?: number; ratioAfter?: number;      // коэффициенты контраста, округлены вниз до сотых
-      value?: number;               // непрозрачность затемнения (overlay), длина свернутого текста (collapse), число абзацев (wall)
-      median?: number;              // REV-122: медиана абзацев остальных секций страницы (wall)
-    }>;
-  };
+  controls?: Partial<IMvpTheme>;  // REV-139: цвета и шрифты оператора поверх theme; сбрасываются перегенерацией
+  grounding?: Array<{             // REV-138: факты страницы, которых нет на исходном сайте; не отклоняют страницу
+    kind: 'number' | 'name'; text: string; context: string;   // context — до 80 символов вокруг
+  }>;
+  versions?: Array<{              // REV-138: опубликованные версии, от старой к новой, не больше MVP_MAX_VERSIONS (20)
+    n: number;                    // 1, 2, …; не переиспользуется
+    kind: 'generate' | 'change' | 'restore';
+    instruction?: string;         // слова оператора для change
+    from?: number;                // версия, которую восстановил restore
+    jobId?: string;               // задача, опубликовавшая версию (повтор задачи переиспользует ее)
+    provider?: string; model?: string;
+    storagePath: string;          // v/<slug>/versions/<n>.html
+    createdAt: Date;
+  }>;
   performance?: {                 // REV-119 (MvpPerformanceSchema): опубликованная страница в мобильном профиле аудита, LCP и CLS тем же кодом в странице (VitalsService.readVitalsInPage); при каждой публикации
     webVitals: { lcp?: number; cls?: number };   // lcp в мс; без LCP — error, подставного числа нет
     score?: number;               // calculatePerformanceScore, как у оригинала; только при LCP
@@ -769,30 +733,6 @@ interface IMvpProject {
   standards?: {                   // REV-118 (MvpStandardsSchema): проверки опубликованной страницы теми же правилами, что и аудит; пересчитываются при каждой публикации
     checks: { https: boolean; viewport: boolean; title: boolean; metaDescription: boolean; singleH1: boolean; favicon: boolean; structuredData: boolean; openGraph: boolean };   // https — готовность к HTTPS: ничего не грузится по http://
     score: number;                // сумма баллов STANDARDS_POINTS пройденных проверок
-  };
-  modernize?: {                   // REV-114 (RebuildModernizeSchema): вид уровня modern, только id и фиксированные значения; по аудиту
-    auditId: string;              // для другого аудита не применяется (modernizeForAudit), перегенерация по новому аудиту снимает
-    source: 'llm' | 'failed';     // llm — ответ RebuildModernizeService; failed — модель не дала дизайна (REV-132); 'default' до REV-132 не применяется
-    design?: RebuildModernizeAnswer;  // только у llm: подмножество IRebuildEdit без order, hidden, dropped, customCss; плюс sections[id].arrangement|mediaSide|media, hero { photo, style }, theme.typeScale
-    error?: 'not_configured' | 'call_failed' | 'invalid_answer';   // только у failed (MODERNIZE_FAILURES)
-    message?: string;             // подробность сбоя
-  };
-  renderFailure?: {               // REV-132 (MvpRenderFailureSchema): почему последняя перерисовка не опубликована; опубликованная страница осталась; снимается публикацией
-    code: 'MVP_REBUILD_UNAVAILABLE' | 'MVP_MODERNIZE_UNAVAILABLE';
-    reason: string;               // RebuildUnavailableReason (grouping:* | rebuild:*) или ModernizeFailure
-    level?: 'faithful' | 'modern';
-    message?: string;
-    at: Date;
-  };
-  rebuildEdit?: {                 // REV-111 (RebuildEditSchema): правка перестройки оператором, только id и фиксированные значения
-    auditId: string;              // аудит, из которого id; правка для другого аудита не применяется
-    order?: string[];             // 's-<index>' в новом порядке; остальные — после, в исходном
-    hidden?: string[];            // скрытые секции
-    dropped?: string[];           // 's-<i>.t<n>' абзац, 's-<i>.i<n>' элемент, 's-<i>.x<n>' доп. блок; до 200
-    sections?: Record<string, { background?: 'original' | 'page' | 'tinted' | 'brand' | 'dark'; align?: 'left' | 'center'; density?: 'compact' | 'comfortable' | 'airy'; arrangement?: 'card-grid' | 'list'; mediaSide?: 'left' | 'right'; media?: 'natural' | 'fill' }>;   // arrangement, mediaSide, media — REV-114
-    hero?: { photo: string; style: 'split' | 'banner' };   // REV-114: photo — 's-<i>.m<n>', n-е фото секции; style banner — фото от 1000 px
-    theme?: { font?: MvpDesignFont; density?: 'compact' | 'comfortable' | 'airy'; corners?: 'sharp' | 'soft' | 'rounded' | 'extra-round'; headingCase?: 'none' | 'uppercase'; typeScale?: 'original' | 'modern' };
-    customCss?: string;           // прошел sanitizeMvpCss, до 4 КБ
   };
   completenessReport?: {          // REV-36/37
     status: 'verified' | 'unverified';
@@ -809,7 +749,7 @@ interface IMvpProject {
     error?: string;
     checkedAt: Date;
   };
-  provider?: 'anthropic' | 'openai' | 'gemini' | 'claude-cli' | 'deterministic'; // REV-32
+  provider?: 'anthropic' | 'openai' | 'gemini' | 'claude-cli' | 'deterministic'; // REV-32, REV-137: кто написал страницу; 'deterministic' — только у MVP прежнего генератора
   modelUsed?: string;
   requestedProvider?: 'anthropic' | 'openai' | 'gemini' | 'claude-cli';
   requestedModel?: string;
@@ -895,7 +835,7 @@ interface IAnalyticsEvent {
 | `409` | `MVP_ALREADY_GENERATED` | `POST /mvp/generate`: MVP уже есть, а `forceRegenerate` не задан; `details.status` |
 | `404` | `MVP_NOT_FOUND` | `GET /mvp/:id`, `PATCH /mvp/:id/tokens`, `PATCH /mvp/:id/layout` |
 | `409` | `MVP_EDIT_NOT_ALLOWED` | `POST /mvp/:id/edit`: лид не в `NEEDS_APPROVAL`; `details.status` (REV-85) |
-| `502` | `MVP_EDIT_FAILED` | `POST /mvp/:id/edit`: изменение не применено — провайдер LLM не настроен или вернул ошибку, ответ не прошел Zod или Strict Grounding; `message` содержит причину (REV-85). Для страницы, написанной моделью (REV-139), — также `PATCH /mvp/:id/tokens` и восстановление версии; `details.reason` (`not_configured`, `call_failed`, `invalid_page`), `details.problems` |
+| `502` | `MVP_EDIT_FAILED` | `POST /mvp/:id/edit`, `PATCH /mvp/:id/tokens`, `POST /mvp/:id/versions/:n/restore`: ничего не опубликовано — задача упала или модель не дала страницы; `message` содержит причину, `details.reason` (`not_configured`, `call_failed`, `invalid_page`) и `details.problems` (коды `MVP_PAGE_CHECKS` с пояснениями) (REV-85, REV-139) |
 | `409` | `MVP_PREVIOUS_GENERATOR` | `POST /mvp/:id/edit`, `PATCH /mvp/:id/tokens`, `POST /mvp/:id/versions/:n/restore`: MVP сделан прежним генератором (нет `page`/`theme`), к нему применима только перегенерация (REV-139) |
 | `404` | `MVP_VERSION_NOT_FOUND` | `POST /mvp/:id/versions/:n/restore`: версии `n` нет в `MvpProject.versions` (REV-139) |
 | `409` | `MVP_VERSION_UNUSABLE` | `POST /mvp/:id/versions/:n/restore`: версия не проходит проверку страницы по текущему аудиту (например, `{{hours}}` без часов работы); `details.problems`, ничего не опубликовано (REV-139) |
@@ -912,7 +852,7 @@ interface IAnalyticsEvent {
 | `502` | `GEOCODING_UNAVAILABLE` | `GET /discovery/reverse-geocode`: сбой Nominatim |
 | `404` | `PLACE_NOT_FOUND` | `GET /discovery/reverse-geocode`: место не найдено |
 
-С REV-139 у страницы, написанной моделью, `PATCH /mvp/:id/tokens` принимает `UpdateMvpTokensSchema` `{ colors?: { primary, accent, bg, surface, text } | null, fonts?: { heading, body } | null }` (текст на `bg` и `surface` с контрастом не ниже 4,5:1, шрифты — пара из `MVP_FONT_CHOICES`, `null` снимает группу), а `POST /mvp/:id/edit` переписывает страницу моделью; обе задачи идут в `mvp-page-queue` (воркер по одной задаче). `PATCH /mvp/:id/layout` и `DELETE /mvp/:id/design` удалены, код `MVP_MODEL_DESIGNED` снят. Коды `MVP_LAYOUT_CHANGE_NOT_ALLOWED`, `MVP_PALETTE_CHANGE_NOT_ALLOWED`, `MVP_REBUILD_UNAVAILABLE` и `MVP_MODERNIZE_UNAVAILABLE` удалены вместе с прежним генератором (REV-141); у лидов, сгенерированных им, они могут остаться в `Lead.generationFailure`. Полное описание маршрутов в §5.2–5.3 обновляется в REV-142.
+С REV-139 у страницы, написанной моделью, `PATCH /mvp/:id/tokens` принимает `UpdateMvpTokensSchema` `{ colors?: { primary, accent, bg, surface, text } | null, fonts?: { heading, body } | null }` (текст на `bg` и `surface` с контрастом не ниже 4,5:1, шрифты — пара из `MVP_FONT_CHOICES`, `null` снимает группу), а `POST /mvp/:id/edit` переписывает страницу моделью; обе задачи идут в `mvp-page-queue` (воркер по одной задаче). `PATCH /mvp/:id/layout` и `DELETE /mvp/:id/design` удалены, код `MVP_MODEL_DESIGNED` снят. Коды `MVP_LAYOUT_CHANGE_NOT_ALLOWED`, `MVP_PALETTE_CHANGE_NOT_ALLOWED`, `MVP_REBUILD_UNAVAILABLE` и `MVP_MODERNIZE_UNAVAILABLE` удалены вместе с прежним генератором (REV-141); у лидов, сгенерированных им, они могут остаться в `Lead.generationFailure`. Маршруты описаны в §5.2–5.3.
 
 Исключения: `GET /health` отвечает `503` телом отчета о состоянии (`status: "degraded"`), а страницы отписки `/track/unsubscribe/:token` — HTML.
 
@@ -933,9 +873,8 @@ interface IAnalyticsEvent {
 | `POST` | `/mvp/generate` | Запуск генерации/перегенерации MVP → `202 { jobId, status: 'GENERATING' }` | `GenerateMvpSchema`: `{ auditId, forceRegenerate?, provider?, model? }` |
 | `GET` | `/mvp/:id` | Проект MVP по `_id`, `leadId`, `auditId` или `previewSlug` (с отчетом полноты); `404 MVP_NOT_FOUND`, если MVP нет (REV-45) | — |
 | `GET` | `/mvp/preview/:slug` | Редирект на опубликованное превью с заголовками CSP / `X-Frame-Options`; `404 PREVIEW_NOT_FOUND`, если превью нет | — |
-| `PATCH` | `/mvp/:id/tokens` | Ручная коррекция палитры оператором по `_id` проекта MVP (не лида): записываются только переданные цвета, ответ — сохраненный проект MVP; `400 INVALID_ID` для неверного id, `404 MVP_NOT_FOUND` для неизвестного, в обоих случаях ничего не записывается (REV-65). Затем ставит в `deploy-queue` задачу `relayout-mvp` (тот же debounce 1,5 с), которая перерисовывает опубликованный бандл в сохраненной палитре и макете (REV-90). `404 LEAD_NOT_FOUND`, `409 MVP_PALETTE_CHANGE_NOT_ALLOWED` вне `NEEDS_APPROVAL` | `UpdateMvpTokensSchema`: `{ primaryColor?, secondaryColor?, accentColor?, headline?, subheadline?, services? }` (сейчас сохраняется только палитра) |
+| `PATCH` | `/mvp/:id/tokens` | Цвета и шрифты оператора поверх темы страницы (REV-139) по `_id` проекта MVP: задача `controls` в `mvp-page-queue` (ожидание до 120 с) сохраняет `controls`, заново завершает сохраненную страницу и публикует ее без вызова модели и без новой версии. `200 { applied, mvp }`. `400 INVALID_ID`, `404 MVP_NOT_FOUND` / `LEAD_NOT_FOUND`, `409 MVP_PREVIOUS_GENERATOR`, `409 MVP_EDIT_NOT_ALLOWED` вне `NEEDS_APPROVAL`, `502 MVP_EDIT_FAILED`, `504 MVP_EDIT_TIMEOUT` | `UpdateMvpTokensSchema`: `{ colors?: { primary, accent, bg, surface, text } \| null, fonts?: { heading, body } \| null }` (текст на `bg` и `surface` ≥ 4,5:1, шрифты — пара `MVP_FONT_CHOICES`, `null` снимает группу) |
 | `POST` | `/mvp/:id/versions/:n/restore` | Восстановление версии страницы, написанной моделью (REV-139): задача `restore` в `mvp-page-queue` (ожидание до 120 с) читает `v/<slug>/versions/<n>.html`, проверяет ее по текущему аудиту и публикует с текущими цветами и шрифтами оператора как новую версию `restore` (`from: n`). `200 { applied, version?, mvp }` (`applied: false, reason: 'unchanged'`, если страница та же). `400 VALIDATION_ERROR` / `INVALID_ID`, `404 MVP_NOT_FOUND` / `MVP_VERSION_NOT_FOUND`, `409 MVP_PREVIOUS_GENERATOR` / `MVP_EDIT_NOT_ALLOWED` / `MVP_VERSION_UNUSABLE`, `502 MVP_EDIT_FAILED`, `504 MVP_EDIT_TIMEOUT` | `MvpVersionParamsSchema`: `n` ≥ 1 |
-| `POST` | `/mvp/:id/rebuild` | *(план)* Пересборка статики после правок оператора | — |
 
 Коды ошибок `POST /mvp/generate`: `400 VALIDATION_ERROR` (неизвестный провайдер или модель другого провайдера), `400 LLM_PROVIDER_NOT_ALLOWED` (dev-only провайдер в production; сейчас таких нет), `404 NO_COMPLETED_AUDIT` / `404 LEAD_NOT_FOUND`, `409 MVP_ALREADY_GENERATED` (MVP есть, а `forceRegenerate` не задан), `409 MVP_GENERATION_NOT_ALLOWED` (письмо уже в отправке или идет генерация).
 
@@ -947,7 +886,7 @@ interface IAnalyticsEvent {
 | `GET` | `/outreach/pending` | Лиды, ожидающие ручного подтверждения (`NEEDS_APPROVAL`) | — |
 | `POST` | `/outreach/:id/approve`| **[HITL Action]** Одобрить: лид → `SCHEDULED`, письмо в `email-queue` с джиттером. Только из `NEEDS_APPROVAL`, атомарно (`findOneAndUpdate` с фильтром статуса); иначе `409 LEAD_NOT_AWAITING_APPROVAL` (REV-59). `409 NO_CONTACT_EMAIL`, если у лида нет e-mail (REV-45); `404 LEAD_NOT_FOUND`. Дашборд присылает черновик в том виде, как его показывает превью, с подставленными переменными (REV-72). `body` — простой текст: он сохраняется в `bodyPlainText`, а в `bodyHtml` — экранированный HTML с абзацами, переносами строк и скрытым preheader (`draftToHtml` из `@revamp/shared-types`, та же функция, что у тестовой отправки). `subject` (1–300 символов) и `body` (1–20000) обязательны, текста по умолчанию нет: без них `400` и ничего не меняется (REV-61) | `{ subject, body, preheader?, approvedBy?, scheduleTime? }` |
 | `POST` | `/outreach/:id/reject` | Отклонить отправку (лид → `REJECTED`). Только до одобрения, атомарно; для `SCHEDULED` и далее, `REJECTED`, `UNSUBSCRIBED` — `409 LEAD_NOT_REJECTABLE` (REV-59); `404 LEAD_NOT_FOUND` | `{ reason: string }` |
-| `POST` | `/mvp/:id/edit` | Изменение MVP своими словами (REV-85) по `_id` проекта MVP: ставит задачу в `mvp-edit-queue` и ждет результата до 150 с. Воркер спрашивает LLM-агента правок (для MVP в макете `original` — агента правки перестройки, REV-111, который меняет `rebuildEdit`), проверяет ответ (Zod и Strict Grounding), сохраняет только измененные тексты / цвет (`primary` и `accent`) / макет (`rule:manual`) и `editedAt`, затем перерисовывает опубликованный бандл. `200 { applied, summary, changes: ('content' \| 'palette' \| 'layout')[], mvp }` (при `applied: false` ничего не записано, `summary` — причина). `400 INVALID_ID`, `404 MVP_NOT_FOUND` / `LEAD_NOT_FOUND`, `409 MVP_EDIT_NOT_ALLOWED`, `502 MVP_EDIT_FAILED`, `504 MVP_EDIT_TIMEOUT`. Статус лида не меняется | `EditMvpSchema`: `{ instruction: string (3–500, trim) }` |
+| `POST` | `/mvp/:id/edit` | Изменение страницы своими словами (REV-85, REV-139) по `_id` проекта MVP: задача `change` в `mvp-page-queue`, API ждет до 420 с. Генератор страницы (режим `change`) получает текущую сырую страницу и слова оператора и возвращает всю страницу; `checkMvpPage` и один повтор, как у генерации; принятая страница публикуется как новая версия `change`. `200 { applied: true, version, mvp }` или `{ applied: false, reason: 'unchanged', mvp }`. `400 INVALID_ID`, `404 MVP_NOT_FOUND` / `LEAD_NOT_FOUND`, `409 MVP_PREVIOUS_GENERATOR`, `409 MVP_EDIT_NOT_ALLOWED`, `502 MVP_EDIT_FAILED` (ничего не опубликовано), `504 MVP_EDIT_TIMEOUT`. Статус лида не меняется | `EditMvpSchema`: `{ instruction: string (3–500, trim) }` |
 | `POST` | `/outreach/:id/test`   | Отправляет текущий черновик (как в превью, с подставленными переменными) на почту оператора через `email-test-queue` и ждёт результата воркера до 30 с (REV-60). Не проходит HITL-гейт, не добавляет пиксель открытий и не меняет лид и `EmailCampaign`. `200` с `{ to, messageId, provider, sentAt }`; `503 EMAIL_PROVIDER_NOT_CONFIGURED`, если `EMAIL_PROVIDER` не задан в API или у воркеров; `502 EMAIL_SEND_FAILED` при ошибке провайдера; `504 EMAIL_TEST_TIMEOUT`, если воркеры не ответили (ожидающая задача удаляется); `404 LEAD_NOT_FOUND`; `400` для неверного id или тела | `{ testEmail, subject, body, preheader? }` |
 | `PUT` | `/outreach/:id/draft` | *(план)* Сохранение черновика без отправки | `{ subject, bodyHtml }` |
 
@@ -998,7 +937,7 @@ graph LR
         Q_Deploy[(deploy-queue)]
         Q_Mail[(email-queue)]
         Q_Test[(email-test-queue)]
-        Q_Edit[(mvp-edit-queue)]
+        Q_Page[(mvp-page-queue)]
     end
 
     subgraph Workers_Pool [Node.js Workers]
@@ -1008,7 +947,7 @@ graph LR
         W3[Deploy Worker<br/>Concurrency: 5]
         W4[Email Dispatcher<br/>Concurrency: 1, 1 письмо / 180 с]
         W5[Email Test Sender<br/>Concurrency: 1, без лимита]
-        W6[MVP Edit Worker<br/>Concurrency: 2]
+        W6[MVP Page Worker<br/>Concurrency: 1]
     end
 
     API_Disc --> Q_Disc --> W0
@@ -1026,7 +965,7 @@ graph LR
     API_Approve --> Q_Mail
     Q_Mail --> W4
     HITL -->|Тест себе| Q_Test --> W5
-    HITL -->|Изменение своими словами| Q_Edit --> W6
+    HITL -->|Изменение, цвета и шрифты, восстановление| Q_Page --> W6
 ```
 
 ### Настройки воркеров:
@@ -1039,13 +978,13 @@ graph LR
    * Ретраи: 3 попытки, экспоненциальный откат от 3 с. Постоянные ошибки навигации (`ERR_NAME_NOT_RESOLVED`, `ERR_CERT_*`, `ERR_INVALID_URL`) завершаются `UnrecoverableError` без повтора. После последней попытки лид переходит из `AUDITING` в `AUDIT_FAILED` с причиной в `auditError` (`audit-failure.ts`, REV-44). Лиды, застрявшие до исправления, переводятся скриптом `backfill:stuck-audits`.
    * По завершении ставит задачу в `ai-gen-queue`. При старте воркеров лиды, застрявшие в `AUDITED` с завершенным аудитом, ставятся в очередь повторно (`recoverStalledAuditedLeads`).
 3. **`ai-gen-queue` Worker:**
-   * Concurrency: `5`. Ретраи: 3 попытки, экспоненциальный откат от 5 с; внутри задачи — до 3 обращений к LLM (температура 0.3 → 0.0 → 0.0), затем детерминированный fallback.
+   * Concurrency: `5`. Ретраи: 3 попытки, экспоненциальный откат от 5 с; внутри задачи — генератор страницы (Агент 2 в `AGENTS.md`): до 2 обращений к модели (температура 0.7, затем 0.3 с причинами отклонения). Модель не дала страницы (`MVP_PAGE_FAILURES`) — `MvpPageUnavailableError` (`UnrecoverableError`), без ретраев и без запасной страницы.
+   * Принятая страница, тема и флаги фактов передаются в `deploy-queue` (`IDeployJobData.page`).
    * Payload несет `forceRegenerate`, `previousStatus` и выбор оператора (`provider`, `model`).
 4. **`deploy-queue` Worker:**
    * Concurrency: `5`. Ретраи: 3 попытки, экспоненциальный откат от 5 с.
-   * Рендер Bento, проверка полноты, выгрузка в `revamp-demos`, баннер «До/После», `Lead.status = NEEDS_APPROVAL`.
-   * Обработчик `failed` (общий с AI-воркером, `generation-failure.ts`) после последнего ретрая — или сразу при `UnrecoverableError` (REV-132) — возвращает лид из `GENERATING` и пишет `generationError`, а у сбоя отрисовки еще `generationFailure`.
-   * Задачи `relayout-mvp` (`mode: 'relayout'`, REV-84, REV-90): перерисовка опубликованного MVP в сохраненном макете и палитре (`MvpProject.colorPalette` вместо цветов аудита) из `MvpProject.generatedContent` тем же детерминированным шаблоном, выгрузка в тот же slug и новый баннер «До/После». Без LLM, без проверки полноты и без смены статуса лида; лид вне `NEEDS_APPROVAL` пропускается. После выгрузки макет читается снова, и если оператор успел сменить его, бандл перерисовывается (до 3 проходов). Сбой такой задачи не трогает лид. После каждой выгрузки (и при генерации) воркер снимает LCP и CLS опубликованной страницы (`measureMvpPerformance` → `BrowserService.measurePageVitals`, мобильный профиль аудита) и пишет `completenessReport`, `standards` и `performance` одним обновлением со сводкой перестройки и `editedAt` (REV-119), чтобы дашборд, который перестает ждать по этому обновлению, не показал проверки прошлой страницы.
+   * Публикация страницы модели (`publishFinishedPage`): `finishMvpPage`, выгрузка `index.html` и версии в `revamp-demos`, стандарты, скорость, проверка полноты, баннер «До/После», `Lead.status = NEEDS_APPROVAL`. Задача без страницы отклоняется `UnrecoverableError` (REV-141).
+   * Обработчик `failed` (общий с AI-воркером, `generation-failure.ts`) после последнего ретрая — или сразу при `UnrecoverableError` — возвращает лид из `GENERATING` и пишет `generationError`, а если страницу не дала модель, еще `generationFailure` (`MVP_PAGE_UNAVAILABLE`).
 5. **`email-queue` Worker:**
    * Throttling: строго 1 письмо в 3 минуты (BullMQ limiter `max: 1, duration: 180000`).
    * Jitter: случайная задержка 15–45 секунд, рассчитываемая API при постановке задачи.
@@ -1057,12 +996,11 @@ graph LR
    * Тестовая отправка черновика оператору. Отдельная очередь, чтобы тест не ждал лимита аутрича и не задерживал его: concurrency `1`, без limiter, 1 попытка без ретраев (оператор ждёт ответа).
    * Тот же `emailService` и провайдер, что у `email-queue`, но без HITL-гейта, MX-проверки и пикселя открытий (`trackOpens: false`); тема с префиксом `[Test]`. Лид и `EmailCampaign` не читаются и не меняются.
    * API ждёт результата через `QueueEvents` до 30 с. Без провайдера задача падает с `EMAIL_PROVIDER_NOT_CONFIGURED`, и API отвечает `503`.
-7. **`mvp-edit-queue` Worker (REV-85):**
-   * Изменение MVP своими словами: concurrency `2`, 1 попытка без ретраев (оператор ждёт ответа), API ждёт результата через `QueueEvents` до 150 с.
-   * `MvpEditService` (агент 5 в `AGENTS.md`) получает инструкцию, контекст генерации (`buildGroundingContext`), текущие тексты, цвет и макет, допустимые цвета (текущий, цвета бренда из аудита, `MVP_COLOR_PRESETS`) и макеты. Ответ проходит `MvpEditOutputSchema`, затем код отклоняет числа, e-mail и ссылки, которых нет в `buildGroundingCorpus` и текущих текстах, и цвет вне списка; тексты дополнительно проходят `enforceStrictGrounding`. Любое нарушение — ошибка задачи без записи.
-   * Агент может вернуть и весь новый дизайн `design` (REV-92): `null` — без изменений, `{}` — сбросить; текст блоков проходит ту же проверку фактов, дизайн сохраняется целиком или снимается (`$unset`). Задача `action: 'reset-design'` снимает дизайн без обращения к модели.
-   * Записываются только измененные части и `editedAt`; затем воркер сам вызывает `republishSavedMvp` (тот же путь, что `relayout-mvp`) и отвечает после выгрузки, чтобы дашборд перезагрузил превью. Задача несет `deadline`: после ухода API по таймауту изменение не применяется; лид, покинувший `NEEDS_APPROVAL` за время ответа модели, тоже.
-
+7. **`mvp-page-queue` Worker (REV-139):**
+   * Изменения опубликованной страницы модели: concurrency `1` (по одной задаче, чтобы версии не пересекались), 1 попытка без ретраев (оператор ждёт ответа), API ждёт результата через `QueueEvents` до 420 с (`change`) или 120 с (`controls`, `restore`).
+   * `change` — генератор страницы в режиме `change` (Агент 2): текущая сырая страница и слова оператора, `checkMvpPage`, один повтор; `controls` — сохраняет цвета и шрифты оператора без модели; `restore` — проверяет сырую страницу версии по текущему аудиту (`unusable_version` → `409 MVP_VERSION_UNUSABLE`).
+   * Публикация — тот же путь, что у деплоя (`publishFinishedPage`): `finishMvpPage`, выгрузка, стандарты, скорость, полнота, флаги, баннер; новая версия (`change`, `restore`) и `editedAt` пишутся одним обновлением, не больше `MVP_MAX_VERSIONS` версий.
+   * Задача несет `deadline`: воркер начинает публикацию, только если до срока осталось больше `PUBLISH_MARGIN_MS` (90 с), иначе ничего не меняет (`expired`); лид, покинувший `NEEDS_APPROVAL` за время ответа модели, тоже не меняется.
 ---
 
 ## 7. Безопасность, отказоустойчивость и соответствие нормам
@@ -1084,7 +1022,7 @@ graph LR
    * **Discovery:** запросы к Nominatim/Overpass идут с идентифицирующим `User-Agent` и конкурентностью 1; Google Maps не парсится, используется только официальный Places API. Импорт берет данные кандидатов только из сохраненного результата задачи, а не из тела запроса, поэтому клиент не может подменить сайт или контакты.
    * **Геолокация оператора:** обратное геокодирование проксируется через API и ограничено уровнем города, чтобы не возвращать улицу оператора.
    * **Локальный Claude Code CLI:** запуск в одноходовом headless-режиме без инструментов, MCP-серверов и пользовательских/проектных настроек, во временной рабочей папке (чтобы CLI не подхватил `CLAUDE.md`/`AGENTS.md` репозитория), с таймаутом `CLAUDE_CLI_TIMEOUT_MS`.
-   * **Провайдеры LLM:** выбор оператора не переключает задачу на другой платный провайдер при сбое — только на детерминированный fallback. Без настроенного провайдера генерация и Vision-критика завершаются ошибкой (REV-45).
+   * **Провайдеры LLM:** выбор оператора не переключает задачу на другой платный провайдер при сбое; у страницы MVP запасного варианта нет (`call_failed`), у критики — шаблон, который не оценивается (REV-101). Без настроенного провайдера генерация и Vision-критика завершаются ошибкой (REV-45).
    * **Grounding:** LLM никогда не выводит телефоны, e-mail и адреса; проверка полноты помечает выдуманные контакты как `unsourced`, а одобрение лида с критическими проблемами требует дополнительного подтверждения оператора.
 
 ---
@@ -1102,7 +1040,7 @@ gantt
 
     section Фаза 2: AI и Генерация MVP
     Brand Token Extractor (стили/лого)     :2026-10-23, 7d
-    Библиотека Bento/Tailwind секций       :2026-10-30, 8d
+    Библиотека Bento/Tailwind секций (заменено REV-135)       :2026-10-30, 8d
     Vision LLM интеграция & сборщик MVP    :2026-11-07, 10d
 
     section Фаза 3: React & MUI Дашборд
@@ -1123,7 +1061,7 @@ gantt
 
 ### Фаза 2: Модуль генерации MVP (Недели 4–6)
 * Парсинг CSS и извлечение палитры/логотипов.
-* Шаблонизатор адаптивных лендингов на базе современных Tailwind-компонентов.
+* Шаблонизатор адаптивных лендингов на базе современных Tailwind-компонентов (исторический план; заменено REV-135 — страницу пишет модель).
 * Интеграция Vision AI для оценки исходного сайта и генерации улучшенных формулировок.
 * Хостинг демо-страниц и автоматическая генерация баннеров «До/После».
 
