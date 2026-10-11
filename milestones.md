@@ -261,6 +261,7 @@ gantt
 | [**REV-141**](https://linear.app/revamp-proect/issue/REV-141) | Удаление прежнего пайплайна: чтение секций, группировка, перестройка, модернизация, Bento, слой дизайна, relayout и их типы, схемы, коды и поля | MVP | ✅ Done |
 | [**REV-142**](https://linear.app/revamp-proect/issue/REV-142) | Документация нового пайплайна: AGENTS.md и README кодового репозитория, spec, blueprint, AGENTS, ADR 17, milestones | Документация | ✅ Done |
 | [**REV-143**](https://linear.app/revamp-proect/issue/REV-143) | Визуальная самопроверка страницы MVP за флагом `MVP_PAGE_SELF_REVIEW`: снимки готовой страницы на 1440 и 390 px, один вызов ревизии, те же проверки, иначе первая страница; замер на 7 сайтах, флаг выключен по умолчанию | MVP | ✅ Done |
+| [**REV-162**](https://linear.app/revamp-proect/issue/REV-162) | «Что изменилось» объясняет каждое изменение дизайна с причиной: модель пишет `{ change, reason }` на языке оператора после `</html>`, код проверяет записи (`MvpDesignChangeSchema`) и хранит список в версии; язык дашборда приходит с «Добавить лид», импортом, генерацией и изменением | MVP | ✅ Done |
 
 ### Definition of Done для тикетов после релиза
 - [ ] Тикет в команде REV с разделами `Problem`, `Expected`, `Acceptance criteria` и меткой `Bug` / `Feature`.
