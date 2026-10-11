@@ -590,7 +590,7 @@ stateDiagram-v2
     [*] --> QUEUED: POST /leads, импорт из Discovery
     QUEUED --> AUDITING: audit worker
     AUDITING --> AUDITED: аудит завершен
-    AUDITING --> AUDIT_FAILED: последняя попытка или постоянная ошибка (DNS, сертификат)
+    AUDITING --> AUDIT_FAILED: последняя попытка, постоянная ошибка (DNS, сертификат) или задача зависла после падений воркера (stalled, REV-145)
     AUDIT_FAILED --> QUEUED: «Повторить аудит» (POST /audits/trigger)
     AUDITED --> GENERATING: авто-цепочка или «Сгенерировать MVP»
     GENERATING --> NEEDS_APPROVAL: deploy worker опубликовал превью / сбой перегенерации (старый MVP цел)
