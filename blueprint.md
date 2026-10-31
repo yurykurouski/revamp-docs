@@ -92,6 +92,7 @@ graph TB
 * **Фронтенд:** React (v18+), TypeScript, Vite, Material UI (MUI v6), TanStack Query, Zustand, i18next (en, ru, be, pl, lt).
 * **Email & Deliverability:** Nodemailer / Resend API / SendGrid, DKIM/SPF валидатор, генерация пикселей отслеживания и URL-редиректов.
 * **Хостинг MVP-демо:** AWS S3 / Cloudflare R2 + CloudFront / Wildcard-поддомены (`*.preview.revampsaas.io`).
+* **CI/CD (REV-177):** GitHub Actions (`.github/workflows/ci.yml`). Задача `Gates` на каждый PR, push в `main` и ручной запуск выполняет те же проверки, что и локально (`build:packages`, `typecheck`, `lint`, `test`, `build`); ее имя — обязательная проверка защиты ветки `main`. Задача `Deploy` идет только из `main` после `Gates`: собирает production-образы Docker, затем по SSH переводит сервер на проверенный коммит (`git merge --ff-only`) и запускает `deploy/deploy.sh`. Секреты (`DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`) и переменные (`DEPLOY_PATH`, `DEPLOY_PORT`) хранятся в окружении `production` на GitHub; `.env.production` остается на сервере.
 
 ---
 
