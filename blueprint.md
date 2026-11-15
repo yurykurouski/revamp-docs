@@ -446,7 +446,7 @@ sequenceDiagram
 
 ## 4. Схема базы данных (MongoDB / Mongoose)
 
-> Схемы ниже отражают фактические модели и типы `@revamp/shared-types`. Модели Mongoose определены один раз в пакете `@revamp/db` (`packages/db/src/models`); `apps/api/src/models` и `apps/workers/src/models` только реэкспортируют их (REV-48), поэтому API и воркеры всегда работают с одной схемой. Коллекция `users` и RBAC (§7) пока не реализованы. Локально MongoDB работает как одноузловой replica set `rs0` с контролем доступа, поэтому доступны транзакции; приложение подключается пользователем `revamp_app` с ролью `readWrite` (REV-198, §7 п. 5).
+> Схемы ниже отражают фактические модели и типы `@revamp/shared-types`. Модели Mongoose определены один раз в пакете `@revamp/db` (`packages/db/src/models`); `apps/api/src/models` и `apps/workers/src/models` только реэкспортируют их (REV-48), поэтому API и воркеры всегда работают с одной схемой. Коллекция `users` и RBAC (§7) пока не реализованы. Локально MongoDB работает как одноузловой replica set `rs0` с контролем доступа, поэтому доступны транзакции; приложение подключается пользователем `revamp_app` с ролью `readWrite` (REV-198, §7 п. 5). Связь «один к одному» лида с `MvpProject` и с `EmailCampaign` обеспечивает сама база: `leadId` в обеих коллекциях — уникальный индекс (`UK`, REV-201). Запись идет upsert-ом с фильтром `{ leadId }`; одновременную вставку MongoDB повторяет как обновление, а развертывание MVP повторяет upsert один раз после E11000 (одновременно уникален `previewSlug`). Базу, созданную до REV-201 (обычный индекс `leadId_1`, возможны дубликаты), переводит `npm run migrate:unique-lead-children --workspace=@revamp/api`: пробный прогон по умолчанию, `-- --apply` при остановленных воркерах; оставляет MVP, на который указывает `Lead.previewUrl` (иначе новейший), и кампанию с самым продвинутым статусом (`UNSUBSCRIBED` первым, иначе новейшую). API и воркеры при старте предупреждают, пока миграция не выполнена.
 
 ```mermaid
 erDiagram
@@ -501,7 +501,7 @@ erDiagram
 
     MvpProject {
         ObjectId _id PK
-        ObjectId leadId FK
+        ObjectId leadId FK, UK
         ObjectId auditId FK
         string previewSlug
         string fullPreviewUrl
@@ -527,7 +527,7 @@ erDiagram
 
     EmailCampaign {
         ObjectId _id PK
-        ObjectId leadId FK
+        ObjectId leadId FK, UK
         ObjectId mvpProjectId FK
         string status
         string subject
@@ -700,7 +700,7 @@ interface IAudit {
 interface IMvpProject {
   _id: Types.ObjectId;
   auditId: Types.ObjectId;
-  leadId: Types.ObjectId;         // один проект на лид; перегенерация обновляет его на месте
+  leadId: Types.ObjectId;         // уникальный индекс (REV-201): один проект на лид; перегенерация обновляет его на месте
   previewSlug: string;            // e.g. "dental-art-a1b2c3"; не меняется при перегенерации
   fullPreviewUrl: string;         // <S3_ENDPOINT>/revamp-demos/v/<slug>/index.html
   storageHtmlPath: string;        // v/<slug>/index.html
@@ -767,7 +767,7 @@ interface IMvpProject {
 ```typescript
 interface IEmailCampaign {
   _id: Types.ObjectId;
-  leadId: Types.ObjectId;
+  leadId: Types.ObjectId;         // уникальный индекс (REV-201): одна кампания на лид; одобрение перезаписывает ее
   auditId: Types.ObjectId;
   mvpProjectId: Types.ObjectId;
   status: 'DRAFT' | 'NEEDS_APPROVAL' | 'APPROVED' | 'SCHEDULED' | 'SENDING' | 'DELIVERED' | 'BOUNCED' | 'REJECTED' | 'UNSUBSCRIBED';
