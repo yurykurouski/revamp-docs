@@ -593,6 +593,7 @@ stateDiagram-v2
     QUEUED --> AUDITING: audit worker
     AUDITING --> AUDITED: аудит завершен
     AUDITING --> AUDIT_FAILED: последняя попытка, постоянная ошибка (DNS, сертификат) или задача зависла после падений воркера (stalled, REV-145)
+    QUEUED --> AUDIT_FAILED: задача аудита не поставилась в очередь (Redis недоступен, REV-202)
     AUDIT_FAILED --> QUEUED: «Повторить аудит» (POST /audits/trigger)
     AUDITED --> GENERATING: авто-цепочка или «Сгенерировать MVP»
     GENERATING --> NEEDS_APPROVAL: deploy worker опубликовал превью / сбой перегенерации (старый MVP цел)
@@ -834,6 +835,7 @@ interface IAnalyticsEvent {
 | `404` | `LEAD_NOT_FOUND` | Лид не найден (`/leads/:id`, `/audits/trigger`, `/mvp/generate`, `POST /mvp/:id/edit`, `PATCH /mvp/:id/tokens`, `POST /mvp/:id/versions/:n/restore`, `/outreach/*`) |
 | `409` | `LEAD_NOT_AUDITABLE` | `POST /audits/trigger`: лид не в `QUEUED` / `AUDIT_FAILED` или изменился во время постановки; `details.status` |
 | `404` | `AUDIT_NOT_FOUND` | `GET /audits/:id` |
+| `503` | `AUDIT_QUEUE_UNAVAILABLE` | `POST /leads`, `POST /audits/trigger`, импорт из поиска: лид сохранен, но задача аудита не поставилась в очередь за 5 с; лид переведен в `AUDIT_FAILED`, `details.leadId` (REV-202) |
 | `400` | `LLM_PROVIDER_NOT_ALLOWED` | `POST /mvp/generate`: dev-only провайдер в production |
 | `404` | `NO_COMPLETED_AUDIT` | `POST /mvp/generate`: у лида нет завершенного аудита |
 | `409` | `MVP_GENERATION_NOT_ALLOWED` | `POST /mvp/generate`: статус лида не позволяет генерацию или лид изменился во время постановки; `details.status` |
@@ -864,7 +866,7 @@ interface IAnalyticsEvent {
 ### 5.1. Управление лидами и аудитами (`/leads`, `/audits`)
 | Метод | Эндпоинт | Описание | Body / Параметры |
 |---|---|---|---|
-| `POST` | `/leads` | Создать лид (`QUEUED`) и поставить аудит в очередь | `CreateLeadSchema`: `{ businessName, originalUrl, contactEmail?, niche, city?, contactPhone?, ownerName?, operatorLocale? }` (без e-mail аудит берет его с сайта, REV-45) |
+| `POST` | `/leads` | Создать лид и первый аудит (`QUEUED`) в одной транзакции и поставить аудит в очередь; если очередь не ответила за 5 с — лид `AUDIT_FAILED` и `503 AUDIT_QUEUE_UNAVAILABLE` (REV-202) | `CreateLeadSchema`: `{ businessName, originalUrl, contactEmail?, niche, city?, contactPhone?, ownerName?, operatorLocale? }` (без e-mail аудит берет его с сайта, REV-45) |
 | `GET` | `/leads` | Список лидов с фильтрами и пагинацией (`pagination.total`); каждый лид несет краткую сводку полноты MVP (`completeness`). `search` ищет подстроку без учета регистра (спецсимволы экранируются). Дашборд загружает все страницы по `limit=100` (REV-43) | `?status=&niche=&complexity=&search=&page=&limit=` (`limit` ≤ 100, по умолчанию 20) |
 | `GET` | `/leads/stats` | Счетчики по всей воронке без учета фильтров списка → `{ total, byStatus }` (`ILeadStats`); источник KPI-карточек дашборда (REV-43) | — |
 | `GET` | `/leads/:id` | Детальная карточка лида + связанный аудит | — |
