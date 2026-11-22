@@ -451,6 +451,9 @@ sequenceDiagram
 ```mermaid
 erDiagram
     Lead ||--o{ Audit : has
+    Business ||--o{ Lead : "pursued by studios"
+    Business ||--o{ Audit : "measured by"
+    Organization ||--o{ Lead : owns
     Lead ||--o| MvpProject : "has (one per lead)"
     Audit ||--o| MvpProject : generates
     Lead ||--o| EmailCampaign : targets
@@ -459,6 +462,8 @@ erDiagram
 
     Lead {
         ObjectId _id PK
+        ObjectId tenantId FK
+        ObjectId businessId FK
         string businessName
         string originalUrl
         string domain
@@ -478,9 +483,19 @@ erDiagram
         string auditError
     }
 
+    Business {
+        ObjectId _id PK
+        string domain UK
+        string originalUrl
+        string businessName
+        string niche
+        string city
+    }
+
     Audit {
         ObjectId _id PK
         ObjectId leadId FK
+        ObjectId businessId FK
         string status
         object scores
         object webVitals
@@ -597,6 +612,8 @@ erDiagram
 ```typescript
 interface ILead {
   _id: Types.ObjectId;
+  tenantId?: Types.ObjectId;     // студия (организация), REV-208; у лидов до разделения нет, пока REV-210 не назначит
+  businessId?: Types.ObjectId;   // общий Business сайта (REV-208); частичный уникальный индекс { tenantId, businessId }
   businessName: string;
   originalUrl: string;
   domain: string;                 // hostname без www, в нижнем регистре
@@ -662,6 +679,7 @@ stateDiagram-v2
 ```typescript
 interface IAudit {
   _id: Types.ObjectId;
+  businessId?: Types.ObjectId;    // общий Business, который измерил аудит (REV-208); COMPLETED-аудит читают лиды всех студий этого бизнеса
   leadId: Types.ObjectId;         // повторный аудит создает новый документ; воркер пишет в самый свежий
   status: 'QUEUED' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
   // 0-100; неизмеренный критерий отсутствует, total взвешен по измеренным (REV-100); design нет при шаблонной критике (REV-101)
@@ -858,7 +876,22 @@ interface IAnalyticsEvent {
 * Экспорт: `npm run db:dump` (`mongodump --archive --gzip` внутри контейнера `revamp-mongo`, файл `backups/<db>-<время>.archive.gz`) и `npm run db:restore -- <файл> [--drop]` (`mongorestore`). Без `MONGO_CONTAINER` используется `revamp-mongo`, а URI с портом, отличным от 27017, отклоняется. Пароль передаётся через окружение и конфиг-файл внутри контейнера, не через аргументы командной строки.
 
 
-#### 6. `organizations`, `users`, `memberships` (REV-206)
+#### 6. `businesses` (REV-208)
+```typescript
+interface IBusiness {
+  _id: Types.ObjectId;
+  domain: string;       // канонический (`normalizeDomain`), нижний регистр, уникален: один бизнес на сайт для всех студий
+  originalUrl: string;
+  businessName: string;
+  niche: NicheType;
+  city?: string;
+}
+```
+* Бизнес пишется upsert-ом с фильтром `{ domain }` (повтор один раз после E11000, как в REV-201); лид хранит копии полей идентичности, аудит — `leadId` лида, который его запустил, и `businessId`.
+* Чтение аудита лида (`findAuditForLead`): свой самый новый аудит, иначе самый новый `COMPLETED` аудит бизнеса. Проверка id аудита из запроса — `auditBelongsToLead`.
+* Индексы: уникальный `businesses.domain`; частичный уникальный `leads.{ tenantId, businessId }` и `leads.businessId`; `audits.businessId`.
+
+#### 7. `organizations`, `users`, `memberships` (REV-206)
 ```typescript
 interface IOrganization { _id: Types.ObjectId; name: string; }            // ≤ 100 знаков
 
@@ -921,6 +954,7 @@ interface IInvitation {                      // REV-207
 | `403` | `INVITATION_EMAIL_MISMATCH` | Приглашение выдано на другой адрес, чем у входящего пользователя (REV-207) |
 | `409` | `EMAIL_TAKEN` | `POST /auth/register`: аккаунт с таким e-mail уже есть (уникальный индекс `users.email`, любой регистр) (REV-206) |
 | `400` | `INVALID_URL` | `POST /leads`: `originalUrl` не разбирается как URL |
+| `409` | `LEAD_ALREADY_EXISTS` | `POST /leads` и импорт: у студии вызывающего уже есть лид на этот сайт (бизнес), `details.leadId` (REV-208) |
 | `404` | `LEAD_NOT_FOUND` | Лид не найден (`/leads/:id`, `/audits/trigger`, `/mvp/generate`, `POST /mvp/:id/edit`, `PATCH /mvp/:id/tokens`, `POST /mvp/:id/versions/:n/restore`, `/outreach/*`) |
 | `409` | `LEAD_NOT_AUDITABLE` | `POST /audits/trigger`: лид не в `QUEUED` / `AUDIT_FAILED` или изменился во время постановки; `details.status` |
 | `404` | `AUDIT_NOT_FOUND` | `GET /audits/:id` |
@@ -967,7 +1001,7 @@ interface IInvitation {                      // REV-207
 | `POST` | `/invitations/:token/accept` | Вошедший пользователь принимает приглашение; адрес должен совпасть, роль любая. `200` с сессией приглашённой студии; `403 INVITATION_EMAIL_MISMATCH`, `409 ALREADY_MEMBER`, `410 INVITATION_EXPIRED` | — |
 | `POST` | `/auth/login` | **Публичный** (REV-206). Вход; `200` в том же виде, что регистрация; `401 INVALID_CREDENTIALS`; `401 UNAUTHENTICATED`, если пароль верный, но у пользователя нет членства или организации | `LoginSchema`: `{ email, password }` |
 | `GET` | `/auth/me` | Текущий пользователь, организация и роль из базы, без токена в ответе; `401 UNAUTHENTICATED` | — |
-| `POST` | `/leads` | Создать лид и первый аудит (`QUEUED`) в одной транзакции и поставить аудит в очередь; если очередь не ответила за 5 с — лид `AUDIT_FAILED` и `503 AUDIT_QUEUE_UNAVAILABLE` (REV-202) | `CreateLeadSchema`: `{ businessName, originalUrl, contactEmail?, niche, city?, contactPhone?, ownerName?, operatorLocale? }` (без e-mail аудит берет его с сайта, REV-45) |
+| `POST` | `/leads` | Создать лид для студии вызывающего (REV-208): общий `Business` сайта находится или создаётся; если у него уже есть `COMPLETED`-аудит, лид создаётся сразу `AUDITED` с этим аудитом и в очередь ставится генерация MVP, иначе лид и первый аудит (`QUEUED`) создаются в одной транзакции и аудит ставится в очередь; `409 LEAD_ALREADY_EXISTS` (`details.leadId`), если у студии уже есть лид на этот сайт; если очередь не ответила за 5 с — лид `AUDIT_FAILED` и `503 AUDIT_QUEUE_UNAVAILABLE` (REV-202) | `CreateLeadSchema`: `{ businessName, originalUrl, contactEmail?, niche, city?, contactPhone?, ownerName?, operatorLocale? }` (без e-mail аудит берет его с сайта, REV-45) |
 | `GET` | `/leads` | Список лидов с фильтрами и пагинацией (`pagination.total`); каждый лид несет краткую сводку полноты MVP (`completeness`). `search` ищет подстроку без учета регистра (спецсимволы экранируются). Дашборд загружает все страницы по `limit=100` (REV-43) | `?status=&niche=&complexity=&search=&page=&limit=` (`limit` ≤ 100, по умолчанию 20) |
 | `GET` | `/leads/stats` | Счетчики по всей воронке без учета фильтров списка → `{ total, byStatus }` (`ILeadStats`); источник KPI-карточек дашборда (REV-43) | — |
 | `GET` | `/leads/:id` | Детальная карточка лида + связанный аудит | — |
