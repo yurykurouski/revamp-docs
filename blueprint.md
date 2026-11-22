@@ -446,7 +446,7 @@ sequenceDiagram
 
 ## 4. Схема базы данных (MongoDB / Mongoose)
 
-> Схемы ниже отражают фактические модели и типы `@revamp/shared-types`. Модели Mongoose определены один раз в пакете `@revamp/db` (`packages/db/src/models`); `apps/api/src/models` и `apps/workers/src/models` только реэкспортируют их (REV-48), поэтому API и воркеры всегда работают с одной схемой. Коллекции `organizations`, `users` и `memberships` (REV-206) хранят студии, пользователей и их роли; данные лидов от организации пока не отбираются (REV-209), а роли кроме `owner` добавит REV-207. Локально MongoDB работает как одноузловой replica set `rs0` с контролем доступа, поэтому доступны транзакции; приложение подключается пользователем `revamp_app` с ролью `readWrite` (REV-198, §7 п. 5). Связь «один к одному» лида с `MvpProject` и с `EmailCampaign` обеспечивает сама база: `leadId` в обеих коллекциях — уникальный индекс (`UK`, REV-201). Запись идет upsert-ом с фильтром `{ leadId }`; одновременную вставку MongoDB повторяет как обновление, а развертывание MVP повторяет upsert один раз после E11000 (одновременно уникален `previewSlug`). Базу, созданную до REV-201 (обычный индекс `leadId_1`, возможны дубликаты), переводит `npm run migrate:unique-lead-children --workspace=@revamp/api`: пробный прогон по умолчанию, `-- --apply` при остановленных воркерах; оставляет MVP, на который указывает `Lead.previewUrl` (иначе новейший), и кампанию с самым продвинутым статусом (`UNSUBSCRIBED` первым, иначе новейшую). API и воркеры при старте предупреждают, пока миграция не выполнена.
+> Схемы ниже отражают фактические модели и типы `@revamp/shared-types`. Модели Mongoose определены один раз в пакете `@revamp/db` (`packages/db/src/models`); `apps/api/src/models` и `apps/workers/src/models` только реэкспортируют их (REV-48), поэтому API и воркеры всегда работают с одной схемой. Коллекции `organizations`, `users` и `memberships` (REV-206) хранят студии, пользователей и их роли; данные лидов от организации пока не отбираются (REV-209), роли `owner`, `operator` и `viewer` и приглашения (`invitations`) добавлены в REV-207. Локально MongoDB работает как одноузловой replica set `rs0` с контролем доступа, поэтому доступны транзакции; приложение подключается пользователем `revamp_app` с ролью `readWrite` (REV-198, §7 п. 5). Связь «один к одному» лида с `MvpProject` и с `EmailCampaign` обеспечивает сама база: `leadId` в обеих коллекциях — уникальный индекс (`UK`, REV-201). Запись идет upsert-ом с фильтром `{ leadId }`; одновременную вставку MongoDB повторяет как обновление, а развертывание MVP повторяет upsert один раз после E11000 (одновременно уникален `previewSlug`). Базу, созданную до REV-201 (обычный индекс `leadId_1`, возможны дубликаты), переводит `npm run migrate:unique-lead-children --workspace=@revamp/api`: пробный прогон по умолчанию, `-- --apply` при остановленных воркерах; оставляет MVP, на который указывает `Lead.previewUrl` (иначе новейший), и кампанию с самым продвинутым статусом (`UNSUBSCRIBED` первым, иначе новейшую). API и воркеры при старте предупреждают, пока миграция не выполнена.
 
 ```mermaid
 erDiagram
@@ -555,6 +555,7 @@ erDiagram
 
     Organization ||--o{ Membership : has
     User ||--o{ Membership : joins
+    Organization ||--o{ Invitation : issues
 
     Organization {
         ObjectId _id PK
@@ -573,6 +574,18 @@ erDiagram
         ObjectId userId FK
         ObjectId organizationId FK
         string role
+    }
+
+    Invitation {
+        ObjectId _id PK
+        ObjectId organizationId FK
+        string email
+        string role
+        string tokenHash UK
+        ObjectId invitedBy FK
+        Date expiresAt
+        Date acceptedAt
+        Date revokedAt
     }
 ```
 
@@ -860,11 +873,23 @@ interface IMembership {
   _id: Types.ObjectId;
   userId: Types.ObjectId;       // ref User
   organizationId: Types.ObjectId; // ref Organization
-  role: 'owner';                // ORGANIZATION_ROLES; 'operator' и 'viewer' добавит REV-207
+  role: 'owner' | 'operator' | 'viewer'; // ORGANIZATION_ROLES (REV-207)
+}
+
+interface IInvitation {                      // REV-207
+  _id: Types.ObjectId;
+  organizationId: Types.ObjectId;
+  email: string;                // нижний регистр; присоединиться можно только с этим адресом
+  role: 'owner' | 'operator' | 'viewer';
+  tokenHash: string;            // SHA-256 одноразового токена, уникален; сам токен не хранится
+  invitedBy: Types.ObjectId;    // ref User
+  expiresAt: Date;              // 7 дней
+  acceptedAt?: Date | null;     // единожды, при использовании
+  revokedAt?: Date | null;      // владелец отозвал или заменено новым приглашением
 }
 ```
-* Регистрация (`createOrganizationWithOwner`, `@revamp/db`) пишет организацию, пользователя и членство владельца одной транзакцией. Индексы: уникальный `users.email`; уникальный `{ userId, organizationId }` и `{ organizationId }` у `memberships`.
-* Демо-набор (`npm run db:seed`) содержит студию `Demo Studio` и владельца `demo-owner@revamp-demo.test` с паролем `demo-owner-password`: локальная тестовая учётная запись, сид не работает с чужими базами (`assertLocalSeedTarget`).
+* Регистрация (`createOrganizationWithOwner`, `@revamp/db`) пишет организацию, пользователя и членство владельца одной транзакцией. Индексы: уникальный `users.email`; уникальный `{ userId, organizationId }` и `{ organizationId }` у `memberships`; уникальный `invitations.tokenHash` и `{ organizationId, createdAt: -1 }`. Приглашение и членство пишутся транзакциями (`createInvitation`, `acceptInvitationAsMember`, `registerWithInvitation`); смена роли и удаление сначала пишут документ организации, поэтому два одновременных запроса конфликтуют, и проверка «последний владелец» второго видит результат первого.
+* Демо-набор (`npm run db:seed`) содержит студию `Demo Studio` с тремя учётными записями по ролям, `demo-owner@`, `demo-operator@` и `demo-viewer@revamp-demo.test`, и общим паролем `demo-owner-password`: локальная тестовая учётная запись, сид не работает с чужими базами (`assertLocalSeedTarget`).
 
 ---
 
@@ -887,6 +912,13 @@ interface IMembership {
 | `500` | `INTERNAL` | Непредвиденная ошибка; в production `message` = `Internal server error` |
 | `401` | `UNAUTHENTICATED` | Нет токена `Authorization: Bearer`, токен неверный или просрочен, либо пользователь, членство или организация из токена больше не существуют (`GET /auth/me`) (REV-206) |
 | `401` | `INVALID_CREDENTIALS` | `POST /auth/login`: неверный пароль или неизвестный e-mail; ответ один и тот же (REV-206) |
+| `403` | `FORBIDDEN` | Роль не позволяет действие: запись у `viewer`, любой запрос `/organization/*` у не-владельца (REV-207) |
+| `409` | `ALREADY_MEMBER` | Приглашение на адрес, который уже принадлежит участнику, или принятие приглашения участником студии (REV-207) |
+| `409` | `LAST_OWNER` | Понижение или удаление последнего владельца студии (REV-207) |
+| `404` | `MEMBER_NOT_FOUND` | В студии нет такого участника (REV-207) |
+| `404` | `INVITATION_NOT_FOUND` | Неизвестный токен или id приглашения (REV-207) |
+| `410` | `INVITATION_EXPIRED` | Приглашение просрочено, уже использовано или отозвано (REV-207) |
+| `403` | `INVITATION_EMAIL_MISMATCH` | Приглашение выдано на другой адрес, чем у входящего пользователя (REV-207) |
 | `409` | `EMAIL_TAKEN` | `POST /auth/register`: аккаунт с таким e-mail уже есть (уникальный индекс `users.email`, любой регистр) (REV-206) |
 | `400` | `INVALID_URL` | `POST /leads`: `originalUrl` не разбирается как URL |
 | `404` | `LEAD_NOT_FOUND` | Лид не найден (`/leads/:id`, `/audits/trigger`, `/mvp/generate`, `POST /mvp/:id/edit`, `PATCH /mvp/:id/tokens`, `POST /mvp/:id/versions/:n/restore`, `/outreach/*`) |
@@ -924,7 +956,14 @@ interface IMembership {
 ### 5.1. Управление лидами и аудитами (`/leads`, `/audits`)
 | Метод | Эндпоинт | Описание | Body / Параметры |
 |---|---|---|---|
-| `POST` | `/auth/register` | **Публичный** (REV-206). Создать студию и её владельца одной транзакцией (`createOrganizationWithOwner`) и сразу войти. `201 { token, user, organization, role }`; `400 VALIDATION_ERROR`; `409 EMAIL_TAKEN` | `RegisterSchema`: `{ email, password (10–128), organizationName (1–100), name? }` |
+| `POST` | `/auth/register` | **Публичный** (REV-206). Создать студию и её владельца одной транзакцией (`createOrganizationWithOwner`) и сразу войти. С `invitationToken` (REV-207) студия не создаётся: пользователь и членство с ролью из приглашения создаются одной транзакцией (`registerWithInvitation`), адрес должен совпасть с приглашением. `201 { token, user, organization, role }`; `400 VALIDATION_ERROR`; `409 EMAIL_TAKEN`; `404`/`410`/`403` коды приглашения | `RegisterSchema`: `{ email, password (10–128), organizationName (1–100) или invitationToken, name? }` |
+| `GET` | `/organization/members` | **Только владелец** (REV-207). Участники студии (пользователь, роль, дата) и действующие приглашения (без токена) → `{ members, invitations }` | — |
+| `POST` | `/organization/invitations` | **Только владелец.** Создать приглашение; прежнее действующее на тот же адрес отзывается. `201 { invitation, token }`: токен показывается один раз, в базе только SHA-256; `409 ALREADY_MEMBER` | `CreateInvitationSchema`: `{ email, role: owner \| operator \| viewer }` |
+| `DELETE` | `/organization/invitations/:id` | **Только владелец.** Отозвать действующее приглашение своей студии; `404 INVITATION_NOT_FOUND` | — |
+| `PATCH` | `/organization/members/:userId` | **Только владелец.** Сменить роль участника своей студии; `409 LAST_OWNER`, `404 MEMBER_NOT_FOUND` | `ChangeMemberRoleSchema`: `{ role }` |
+| `DELETE` | `/organization/members/:userId` | **Только владелец.** Удалить участника из студии (аккаунт остаётся); `409 LAST_OWNER`, `404 MEMBER_NOT_FOUND` | — |
+| `GET` | `/invitations/:token` | **Публичный** (REV-207): токен в ссылке — секрет. Студия, адрес, роль и срок для страницы присоединения; `404 INVITATION_NOT_FOUND`, `410 INVITATION_EXPIRED` | — |
+| `POST` | `/invitations/:token/accept` | Вошедший пользователь принимает приглашение; адрес должен совпасть, роль любая. `200` с сессией приглашённой студии; `403 INVITATION_EMAIL_MISMATCH`, `409 ALREADY_MEMBER`, `410 INVITATION_EXPIRED` | — |
 | `POST` | `/auth/login` | **Публичный** (REV-206). Вход; `200` в том же виде, что регистрация; `401 INVALID_CREDENTIALS`; `401 UNAUTHENTICATED`, если пароль верный, но у пользователя нет членства или организации | `LoginSchema`: `{ email, password }` |
 | `GET` | `/auth/me` | Текущий пользователь, организация и роль из базы, без токена в ответе; `401 UNAUTHENTICATED` | — |
 | `POST` | `/leads` | Создать лид и первый аудит (`QUEUED`) в одной транзакции и поставить аудит в очередь; если очередь не ответила за 5 с — лид `AUDIT_FAILED` и `503 AUDIT_QUEUE_UNAVAILABLE` (REV-202) | `CreateLeadSchema`: `{ businessName, originalUrl, contactEmail?, niche, city?, contactPhone?, ownerName?, operatorLocale? }` (без e-mail аудит берет его с сайта, REV-45) |
@@ -1080,12 +1119,12 @@ graph LR
    * Blacklist доменов: исключение правительственных сайтов, банков, крупных корпораций, сайтов с явным указанием `no-outreach`.
    * Автоматический мониторинг репутации IP и доменов отправки (Postmaster Tools API).
 3. **Аутентификация и права доступа в Дашборде:**
-   * JWT (HS256, 7 дней) в заголовке `Authorization: Bearer`; пароли хэшируются `scrypt` (REV-206). Refresh-токенов и cookie нет.
+   * JWT (HS256, 7 дней) в заголовке `Authorization: Bearer`; пароли хэшируются `scrypt` (REV-206). Refresh-токенов и cookie нет. Роль читается из базы на каждом запросе (REV-207), токен её не несёт.
    * RBAC (Role-Based Access Control):
      - `Admin`: настройка SMTP, API-ключей, управление пользователями.
      - `Operator / Reviewer`: просмотр лидов, правка писем, ручной аппрув отправки.
      - `Viewer`: просмотр аналитики без права отправки.
-   * *Статус:* вход и организации реализованы (REV-206, роль `owner`). Роли `operator` и `viewer` с приглашениями — REV-207; изоляция данных студий — REV-209.
+   * *Статус:* вход, организации, роли `owner`, `operator`, `viewer` и приглашения реализованы (REV-206, REV-207): `viewer` читает, `operator` меняет данные, `owner` ещё управляет командой. Изоляция данных студий — REV-209.
 4. **Внешние источники данных и LLM (REV-26…REV-37):**
    * **Discovery:** запросы к Nominatim/Overpass идут с идентифицирующим `User-Agent` и конкурентностью 1; Google Maps не парсится, используется только официальный Places API. Импорт берет данные кандидатов только из сохраненного результата задачи, а не из тела запроса, поэтому клиент не может подменить сайт или контакты.
    * **Геолокация оператора:** обратное геокодирование проксируется через API и ограничено уровнем города, чтобы не возвращать улицу оператора.

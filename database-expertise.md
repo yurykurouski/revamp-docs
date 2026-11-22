@@ -39,7 +39,7 @@
 
 ## 3. Модель данных
 
-База `revamp` содержит восемь коллекций: пять про лиды и три про аккаунты (REV-206). Корень модели — `Lead` (бизнес — потенциальный клиент); остальные коллекции ссылаются на него полем `leadId` (тип `ObjectId`). Схемы определены один раз в `packages/db`, а API и воркеры только реэкспортируют их (REV-48).
+База `revamp` содержит девять коллекций: пять про лиды и четыре про аккаунты (REV-206, REV-207). Корень модели — `Lead` (бизнес — потенциальный клиент); остальные коллекции ссылаются на него полем `leadId` (тип `ObjectId`). Схемы определены один раз в `packages/db`, а API и воркеры только реэкспортируют их (REV-48).
 
 | Коллекция (Mongo) | Модель | Что хранит | Почему отдельная коллекция |
 | --- | --- | --- | --- |
@@ -51,6 +51,7 @@
 | `organizations` | `Organization` | Студия (арендатор) | Корень аккаунтов (REV-206) |
 | `users` | `User` | Пользователь: e-mail, хэш пароля | Один аккаунт на e-mail на всю платформу, студий может быть несколько |
 | `memberships` | `Membership` | Членство пользователя в студии с ролью | Связь «многие ко многим» между `users` и `organizations` |
+| `invitations` | `Invitation` | Приглашение в студию на адрес с ролью (REV-207) | Свой срок жизни (7 дней) и одноразовое использование; хранит только хэш токена |
 
 **Связи** (все — по ссылке на `_id`, без проверки внешнего ключа на стороне базы):
 
@@ -61,7 +62,7 @@
 
 **Встроенные документы** — те данные, которые читаются только вместе с родителем и не растут без границы: `Audit.scores`, `webVitals`, `standardsChecks`, `a11ySummary`, `designCritique`, `extractedBrandTokens`, `screenshotUrls`; `EmailCampaign.metrics` (счётчики открытий и кликов). Сложные и часто меняющиеся структуры (`axeViolations`, `extractedContent`, `siteEra`, `MvpProject.theme`, `versions`) хранятся как `Mixed` и проверяются Zod-схемами в коде.
 
-Не в базе: результаты поиска бизнесов (Redis, задача BullMQ), файлы демо-страниц и скриншоты (MinIO / S3, в базе только ссылки). Аккаунты (REV-206): `organizations`, `users`, `memberships`. Роль пока одна, `owner`; роли `operator` и `viewer` и приглашения — REV-207. Данные лидов от организации пока не отбираются (REV-209): вошедший пользователь видит все лиды.
+Не в базе: результаты поиска бизнесов (Redis, задача BullMQ), файлы демо-страниц и скриншоты (MinIO / S3, в базе только ссылки). Аккаунты (REV-206): `organizations`, `users`, `memberships`. Роли `owner`, `operator`, `viewer` и приглашения реализованы в REV-207. Данные лидов от организации пока не отбираются (REV-209): вошедший пользователь видит все лиды.
 
 ## 4. Словарь данных
 
@@ -224,7 +225,20 @@
 | --- | --- | --- | --- | --- |
 | `userId` | ObjectId | да |  | Ссылка на `users`; вместе с `organizationId` уникальна |
 | `organizationId` | ObjectId | да |  | Ссылка на `organizations`, индекс |
-| `role` | String (enum) | да |  | `owner` (`ORGANIZATION_ROLES`); `operator` и `viewer` добавит REV-207 |
+| `role` | String (enum) | да |  | `owner`, `operator` или `viewer` (`ORGANIZATION_ROLES`, REV-207): `viewer` читает, `operator` меняет данные, `owner` ещё управляет командой |
+
+### 4.11. `invitations` — приглашение в студию (REV-207)
+
+| Поле | Тип | Обяз. | ПДн | Ограничения и смысл |
+| --- | --- | --- | --- | --- |
+| `organizationId` | ObjectId | да |  | Ссылка на `organizations`; вместе с `createdAt` в индексе для экрана «Команда» |
+| `email` | String | да | ✔ | Адрес, на который выдано приглашение; нижний регистр, не длиннее 254 знаков; присоединиться можно только с ним |
+| `role` | String (enum) | да |  | `owner`, `operator` или `viewer`: роль, которую получит принявший |
+| `tokenHash` | String | да |  | SHA-256 одноразового токена (32 случайных байта); уникален; сам токен нигде не хранится и показывается владельцу один раз |
+| `invitedBy` | ObjectId | да |  | Ссылка на `users`: кто пригласил |
+| `expiresAt` | Date | да |  | Срок действия, 7 дней от создания |
+| `acceptedAt` | Date |  |  | Время использования; ставится один раз атомарным условным обновлением |
+| `revokedAt` | Date |  |  | Время отзыва владельцем или замены новым приглашением на тот же адрес |
 
 ## 5. Логическая схема
 
@@ -240,6 +254,8 @@ erDiagram
     EmailCampaign ||--o{ AnalyticsEvent : "campaignId"
     Organization ||--o{ Membership : "organizationId"
     User ||--o{ Membership : "userId (unique с organizationId)"
+    Organization ||--o{ Invitation : "organizationId"
+    User ||--o{ Invitation : "invitedBy"
 ```
 
 Лид — корень модели: `Audit`, `MvpProject`, `EmailCampaign` и `AnalyticsEvent` хранят его `_id` в поле `leadId`. Связи с лидом по `MvpProject` и `EmailCampaign` — один к одному, их держит уникальный индекс. `MvpProject.auditId`, `EmailCampaign.mvpProjectId` и `AnalyticsEvent.mvpProjectId` / `campaignId` — ссылки между остальными коллекциями. Аккаунты (REV-206) стоят отдельно от лида: пока ни одна из пяти коллекций лидов не ссылается на организацию (это REV-208 и REV-209). Расширенная ER-диаграмма с полями лежит в `blueprint.md` §4.
@@ -260,7 +276,9 @@ erDiagram
 | `emailcampaigns` | `{ leadId: 1 }` | **уникальный** | Одна кампания на лид (REV-201) и поиск кампании лида в воркере писем (`$or: [{ _id }, { leadId }]`) и в одобрении |
 | `users` | `{ email: 1 }` | **уникальный** | Вход ищет пользователя по e-mail (`User.findOne({ email })`); уникальность делает двойную регистрацию ошибкой E11000 → `409 EMAIL_TAKEN`, в том числе при гонке из 20 запросов (тест на настоящем `mongod`) |
 | `memberships` | `{ userId: 1, organizationId: 1 }` | **уникальный** составной | Один пользователь входит в студию один раз; тот же индекс обслуживает «членства пользователя» при входе и `GET /auth/me` |
-| `memberships` | `{ organizationId: 1 }` | однополевой | «Участники студии» (понадобится приглашениям, REV-207) |
+| `memberships` | `{ organizationId: 1 }` | однополевой | «Участники студии» на экране «Команда» и подсчёт владельцев при смене роли (REV-207) |
+| `invitations` | `{ tokenHash: 1 }` | **уникальный** | Страница присоединения и принятие ищут приглашение по хэшу токена из ссылки; уникальность исключает два приглашения с одним токеном |
+| `invitations` | `{ organizationId: 1, createdAt: -1 }` | составной | Список действующих приглашений студии на экране «Команда», новые первыми |
 | `emailcampaigns` | `{ trackingToken: 1 }` | **уникальный** | Горячий путь: каждое открытие письма, клик и отписка ищут кампанию по токену (`/track/…`, публичные адреса). Уникальность не даёт двум письмам один токен |
 
 Индексы, для которых я **не нашёл запроса** в текущем коде:
@@ -282,8 +300,8 @@ erDiagram
 | Вид | Что и где |
 | --- | --- |
 | Первичный ключ | `_id` (`ObjectId`) в каждой коллекции; база создаёт уникальный индекс по нему сама |
-| Внешние ключи | `Audit.leadId`, `MvpProject.leadId` / `auditId`, `EmailCampaign.leadId` / `auditId` / `mvpProjectId`, `AnalyticsEvent.leadId` / `campaignId` / `mvpProjectId`. Тип `ObjectId` с `ref` в Mongoose; **база их не проверяет и каскадного удаления нет** |
-| Уникальность | `users.email`, пара `memberships.{userId, organizationId}` (REV-206), `MvpProject.leadId`, `EmailCampaign.leadId` (один к одному с лидом, REV-201), `MvpProject.previewSlug`, `EmailCampaign.trackingToken` |
+| Внешние ключи | `Audit.leadId`, `MvpProject.leadId` / `auditId`, `EmailCampaign.leadId` / `auditId` / `mvpProjectId`, `AnalyticsEvent.leadId` / `campaignId` / `mvpProjectId`, `Membership.userId` / `organizationId`, `Invitation.organizationId` / `invitedBy`. Тип `ObjectId` с `ref` в Mongoose; **база их не проверяет и каскадного удаления нет** |
+| Уникальность | `users.email`, пара `memberships.{userId, organizationId}` (REV-206), `invitations.tokenHash` (REV-207), `MvpProject.leadId`, `EmailCampaign.leadId` (один к одному с лидом, REV-201), `MvpProject.previewSlug`, `EmailCampaign.trackingToken` |
 | Обязательность | `required` в схемах: для `Lead` — `businessName`, `originalUrl`, `domain`; для `EmailCampaign` — `leadId`, `senderEmail`, `recipientEmail`, `subject`, `bodyHtml`, `trackingToken` (полный список — в словаре) |
 | Допустимые значения | `enum` у `niche`, `source`, `status` (в трёх коллекциях), `operatorLocale`, `siteComplexity`, `eventType`, `impact` нарушения доступности, `measurementErrors.measurement` |
 | Диапазоны | `totalScore` и все `scores.*` от 0 до 100; `scrollDepthPercent` 0–100; `dwellTimeSeconds` ≥ 0; `businessName`, `city`, `ownerName` ≤ 100 знаков, `contactPhone` ≤ 30 |
@@ -350,7 +368,7 @@ erDiagram
 
 ## 10. Тестовые данные и справочники
 
-**Демо-набор: `npm run db:seed` (REV-199).** Команда загружает в локальную базу студию `Demo Studio` с владельцем `demo-owner@revamp-demo.test` (пароль `demo-owner-password`, локальная тестовая учётная запись, REV-206; `--reset` не трогает настоящих пользователей) и фиксированный набор: 10 лидов с тегом `demo-seed` в статусах `QUEUED`, `AUDIT_FAILED`, `AUDITED` (×2), `NEEDS_APPROVAL`, `SENT`, `OPENED`, `CLICKED`, `ENGAGED`, `UNSUBSCRIBED`, их аудиты, 6 MVP (HTML загружается в MinIO), 6 кампаний и 15 событий. Пограничные случаи: лид без e-mail, аудит с неудавшимся замером и шаблонной критикой, неудавшийся аудит. Все домены и адреса — в зарезервированной зоне `.test`, поэтому отправить им письмо нельзя. Запись идёт через модели `@revamp/db` в одной транзакции с фиксированными `_id`: повторный запуск ничего не дублирует, `-- --reset` возвращает демо-документы в исходное состояние, чужие документы не трогаются. Скрипт отказывается работать с продакшеном и с нелокальной базой. Тест сверяет набор со схемами Mongoose и Zod и проверяет все ссылки.
+**Демо-набор: `npm run db:seed` (REV-199).** Команда загружает в локальную базу студию `Demo Studio` с тремя учётными записями по ролям: `demo-owner@`, `demo-operator@` и `demo-viewer@revamp-demo.test` (общий пароль `demo-owner-password`, локальные тестовые записи, REV-206, REV-207; `--reset` не трогает настоящих пользователей) и фиксированный набор: 10 лидов с тегом `demo-seed` в статусах `QUEUED`, `AUDIT_FAILED`, `AUDITED` (×2), `NEEDS_APPROVAL`, `SENT`, `OPENED`, `CLICKED`, `ENGAGED`, `UNSUBSCRIBED`, их аудиты, 6 MVP (HTML загружается в MinIO), 6 кампаний и 15 событий. Пограничные случаи: лид без e-mail, аудит с неудавшимся замером и шаблонной критикой, неудавшийся аудит. Все домены и адреса — в зарезервированной зоне `.test`, поэтому отправить им письмо нельзя. Запись идёт через модели `@revamp/db` в одной транзакции с фиксированными `_id`: повторный запуск ничего не дублирует, `-- --reset` возвращает демо-документы в исходное состояние, чужие документы не трогаются. Скрипт отказывается работать с продакшеном и с нелокальной базой. Тест сверяет набор со схемами Mongoose и Zod и проверяет все ссылки.
 
 **Экспорт и импорт:** `npm run db:dump` (архив `backups/<db>-<время>.archive.gz`) и `npm run db:restore -- <файл> [--drop]` запускают `mongodump` / `mongorestore` внутри контейнера под `revamp_app`.
 
@@ -372,6 +390,7 @@ erDiagram
 | Данные | Где | Как защищены |
 | --- | --- | --- |
 | IP-адрес посетителя (открытие письма, клик) | `AnalyticsEvent.ipHash` | **Маскированы.** В базу пишется `SHA-256(ip + соль)`, первые 32 символа (`hashClientIp` в `tracking.service.ts`); сырой IP не сохраняется. Соль берётся из `IP_SALT`. Тест проверяет, что одинаковый IP даёт одинаковый хэш, разные IP — разные, пустой IP — пустую строку |
+| Токен приглашения (REV-207) | `invitations.tokenHash` | **Хэширован.** В базе только SHA-256; токен показывается владельцу один раз и работает один раз. Адрес приглашённого (`email`) не маскируется |
 | Пароль пользователя платформы (REV-206) | `users.passwordHash` | **Хэширован.** `scrypt` со случайной солью; сам пароль нигде не хранится и не логируется, API хэш не возвращает. E-mail и имя пользователя не маскируются |
 | Пароль MongoDB в адресе подключения | логи API, воркеров, скриптов | **Маскирован.** `redactMongoUri` заменяет пароль на `***`; логировать адрес напрямую нельзя по правилам проекта |
 | Геолокация оператора | `GET /discovery/reverse-geocode` | **Минимизированы.** Ответ ограничен уровнем города, улица оператора не возвращается и не хранится |
