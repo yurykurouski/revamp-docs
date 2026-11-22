@@ -889,7 +889,7 @@ interface IBusiness {
 ```
 * Бизнес пишется upsert-ом с фильтром `{ domain }` (повтор один раз после E11000, как в REV-201); лид хранит копии полей идентичности, аудит — `leadId` лида, который его запустил, и `businessId`.
 * Чтение аудита лида (`findAuditForLead`): свой самый новый аудит, иначе самый новый `COMPLETED` аудит бизнеса. Проверка id аудита из запроса — `auditBelongsToLead`.
-* Индексы: уникальный `businesses.domain`; частичный уникальный `leads.{ tenantId, businessId }` и `leads.businessId`; `audits.businessId`.
+* Индексы: уникальный `businesses.domain`; частичный уникальный `leads.{ tenantId, businessId }` и `leads.businessId`; составной `audits.{ businessId, status, createdAt: -1 }`. Аудит после `COMPLETED` только для чтения: воркеры публикации ничего не пишут в него (баннер сравнения хранится на лиде и в MVP). `POST /mvp/generate` несёт `leadId`; id аудита без `leadId` отклоняется, если аудит читает больше одного лида; `GET /mvp/:id` не ищет по id аудита.
 
 #### 7. `organizations`, `users`, `memberships` (REV-206)
 ```typescript
