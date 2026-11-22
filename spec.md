@@ -244,6 +244,7 @@ graph TD
 * **Требование 3.3.2.3:** Наличие рандомизированного интервала (Jitter: от 15 до 45 секунд) между запланированными отправками.
 * **Требование 3.3.2.4:** Автоматическая валидация MX-записей домена получателя перед отправкой.
 * **Требование 3.3.2.6:** Каждое одобренное письмо отправляется не больше одного раза и только с темой и телом, которые одобрил оператор (REV-61). `POST /outreach/:id/approve` требует `subject` и `body` (иначе `400`). Воркер захватывает кампанию (`SCHEDULED` → `SENDING`) перед отправкой, ретраи не отправляют письмо повторно, а без одобренной кампании или с пустым текстом задача падает без отправки.
+* **Требование 3.3.2.7 (REV-203):** Одобрение атомарно. Перевод лида `NEEDS_APPROVAL` → `SCHEDULED` и запись одобренной кампании выполняются в одной транзакции MongoDB; задача отправки ставится в очередь после неё с ограничением 5 с (`EMAIL_ENQUEUE_TIMEOUT_MS`). Если Redis недоступен или не отвечает, лид и кампания возвращаются в `NEEDS_APPROVAL` (отметки одобрения стираются), API отвечает `503 EMAIL_QUEUE_UNAVAILABLE`, оператор одобряет снова. Письмо не уходит: воркер отправляет только лиду в `SCHEDULED`. Лидов, застрявших в `SCHEDULED` до этого, находит `npm run repair:scheduled-leads` (пробный прогон, `-- --apply`).
 * **Требование 3.3.2.5:** Наличие в заголовках и теле письма корректной ссылки отписки (`List-Unsubscribe`, `One-Click Unsubscribe`) на `{PUBLIC_API_URL}/track/unsubscribe/{trackingToken}` (REV-73):
   - `GET` показывает страницу подтверждения с кнопкой «Unsubscribe» и ничего не меняет: почтовые сканеры заранее открывают все ссылки письма (RFC 8058 §3.2).
   - `POST` (one-click от почтового клиента с телом `List-Unsubscribe=One-Click` или кнопка подтверждения) переводит лид и `EmailCampaign` в `UNSUBSCRIBED`, пишет `unsubscribedAt` и одно событие `unsubscribe`; ответ `200`. Повторный вызов идемпотентен.
@@ -384,7 +385,7 @@ graph TD
   - общие: `VALIDATION_ERROR` (400, ошибки Zod в `details.issues`), `INVALID_ID` (400), `INVALID_JSON` (400), `PAYLOAD_TOO_LARGE` (413), `DUPLICATE` (409), `NOT_FOUND` (404, неизвестный маршрут), `INTERNAL` (500, текст скрыт в production);
   - лиды и аудиты: `INVALID_URL`, `LEAD_NOT_FOUND`, `LEAD_NOT_AUDITABLE`, `AUDIT_NOT_FOUND`, `AUDIT_QUEUE_UNAVAILABLE`;
   - MVP: `LLM_PROVIDER_NOT_ALLOWED`, `NO_COMPLETED_AUDIT`, `MVP_GENERATION_NOT_ALLOWED`, `MVP_ALREADY_GENERATED`, `MVP_NOT_FOUND`, `MVP_EDIT_NOT_ALLOWED`, `MVP_EDIT_FAILED`, `MVP_EDIT_TIMEOUT`, `MVP_PREVIOUS_GENERATOR`, `MVP_VERSION_NOT_FOUND`, `MVP_VERSION_UNUSABLE`, `PREVIEW_NOT_FOUND`; код сбоя воркера в `Lead.generationFailure` — `MVP_PAGE_UNAVAILABLE` (REV-137);
-  - аутрич: `LEAD_NOT_AWAITING_APPROVAL`, `LEAD_NOT_REJECTABLE`, `NO_CONTACT_EMAIL`, `EMAIL_PROVIDER_NOT_CONFIGURED`, `EMAIL_TEST_TIMEOUT`, `EMAIL_SEND_FAILED`;
+  - аутрич: `LEAD_NOT_AWAITING_APPROVAL`, `LEAD_NOT_REJECTABLE`, `NO_CONTACT_EMAIL`, `EMAIL_QUEUE_UNAVAILABLE`, `EMAIL_PROVIDER_NOT_CONFIGURED`, `EMAIL_TEST_TIMEOUT`, `EMAIL_SEND_FAILED`;
   - поиск бизнесов: `DISCOVERY_JOB_NOT_FOUND`, `DISCOVERY_JOB_NOT_COMPLETED`, `GEOCODING_UNAVAILABLE`, `PLACE_NOT_FOUND`.
 
   Клиенты (дашборд) выбирают поведение по `error.code` и показывают оператору `error.message`.
