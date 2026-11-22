@@ -446,7 +446,7 @@ sequenceDiagram
 
 ## 4. Схема базы данных (MongoDB / Mongoose)
 
-> Схемы ниже отражают фактические модели и типы `@revamp/shared-types`. Модели Mongoose определены один раз в пакете `@revamp/db` (`packages/db/src/models`); `apps/api/src/models` и `apps/workers/src/models` только реэкспортируют их (REV-48), поэтому API и воркеры всегда работают с одной схемой. Коллекция `users` и RBAC (§7) пока не реализованы. Локально MongoDB работает как одноузловой replica set `rs0` с контролем доступа, поэтому доступны транзакции; приложение подключается пользователем `revamp_app` с ролью `readWrite` (REV-198, §7 п. 5). Связь «один к одному» лида с `MvpProject` и с `EmailCampaign` обеспечивает сама база: `leadId` в обеих коллекциях — уникальный индекс (`UK`, REV-201). Запись идет upsert-ом с фильтром `{ leadId }`; одновременную вставку MongoDB повторяет как обновление, а развертывание MVP повторяет upsert один раз после E11000 (одновременно уникален `previewSlug`). Базу, созданную до REV-201 (обычный индекс `leadId_1`, возможны дубликаты), переводит `npm run migrate:unique-lead-children --workspace=@revamp/api`: пробный прогон по умолчанию, `-- --apply` при остановленных воркерах; оставляет MVP, на который указывает `Lead.previewUrl` (иначе новейший), и кампанию с самым продвинутым статусом (`UNSUBSCRIBED` первым, иначе новейшую). API и воркеры при старте предупреждают, пока миграция не выполнена.
+> Схемы ниже отражают фактические модели и типы `@revamp/shared-types`. Модели Mongoose определены один раз в пакете `@revamp/db` (`packages/db/src/models`); `apps/api/src/models` и `apps/workers/src/models` только реэкспортируют их (REV-48), поэтому API и воркеры всегда работают с одной схемой. Коллекции `organizations`, `users` и `memberships` (REV-206) хранят студии, пользователей и их роли; данные лидов от организации пока не отбираются (REV-209), а роли кроме `owner` добавит REV-207. Локально MongoDB работает как одноузловой replica set `rs0` с контролем доступа, поэтому доступны транзакции; приложение подключается пользователем `revamp_app` с ролью `readWrite` (REV-198, §7 п. 5). Связь «один к одному» лида с `MvpProject` и с `EmailCampaign` обеспечивает сама база: `leadId` в обеих коллекциях — уникальный индекс (`UK`, REV-201). Запись идет upsert-ом с фильтром `{ leadId }`; одновременную вставку MongoDB повторяет как обновление, а развертывание MVP повторяет upsert один раз после E11000 (одновременно уникален `previewSlug`). Базу, созданную до REV-201 (обычный индекс `leadId_1`, возможны дубликаты), переводит `npm run migrate:unique-lead-children --workspace=@revamp/api`: пробный прогон по умолчанию, `-- --apply` при остановленных воркерах; оставляет MVP, на который указывает `Lead.previewUrl` (иначе новейший), и кампанию с самым продвинутым статусом (`UNSUBSCRIBED` первым, иначе новейшую). API и воркеры при старте предупреждают, пока миграция не выполнена.
 
 ```mermaid
 erDiagram
@@ -551,6 +551,28 @@ erDiagram
         number scrollDepthPercent
         object metadata
         Date timestamp
+    }
+
+    Organization ||--o{ Membership : has
+    User ||--o{ Membership : joins
+
+    Organization {
+        ObjectId _id PK
+        string name
+    }
+
+    User {
+        ObjectId _id PK
+        string email UK
+        string passwordHash
+        string name
+    }
+
+    Membership {
+        ObjectId _id PK
+        ObjectId userId FK
+        ObjectId organizationId FK
+        string role
     }
 ```
 
@@ -822,6 +844,28 @@ interface IAnalyticsEvent {
 * Скрипт отказывается работать при `NODE_ENV=production`, с `mongodb+srv` и с любым хостом, кроме `localhost`, `127.0.0.1`, `::1` и `mongo` (`assertLocalSeedTarget`).
 * Экспорт: `npm run db:dump` (`mongodump --archive --gzip` внутри контейнера `revamp-mongo`, файл `backups/<db>-<время>.archive.gz`) и `npm run db:restore -- <файл> [--drop]` (`mongorestore`). Без `MONGO_CONTAINER` используется `revamp-mongo`, а URI с портом, отличным от 27017, отклоняется. Пароль передаётся через окружение и конфиг-файл внутри контейнера, не через аргументы командной строки.
 
+
+#### 6. `organizations`, `users`, `memberships` (REV-206)
+```typescript
+interface IOrganization { _id: Types.ObjectId; name: string; }            // ≤ 100 знаков
+
+interface IUser {
+  _id: Types.ObjectId;
+  email: string;                // нижний регистр, уникален на всю платформу
+  passwordHash: string;         // 'scrypt$<соль hex>$<ключ hex>'; пароль не хранится и не логируется
+  name?: string;
+}
+
+interface IMembership {
+  _id: Types.ObjectId;
+  userId: Types.ObjectId;       // ref User
+  organizationId: Types.ObjectId; // ref Organization
+  role: 'owner';                // ORGANIZATION_ROLES; 'operator' и 'viewer' добавит REV-207
+}
+```
+* Регистрация (`createOrganizationWithOwner`, `@revamp/db`) пишет организацию, пользователя и членство владельца одной транзакцией. Индексы: уникальный `users.email`; уникальный `{ userId, organizationId }` и `{ organizationId }` у `memberships`.
+* Демо-набор (`npm run db:seed`) содержит студию `Demo Studio` и владельца `demo-owner@revamp-demo.test` с паролем `demo-owner-password`: локальная тестовая учётная запись, сид не работает с чужими базами (`assertLocalSeedTarget`).
+
 ---
 
 ## 5. Спецификация REST API (Express.js)
@@ -841,6 +885,9 @@ interface IAnalyticsEvent {
 | `409` | `DUPLICATE` | Нарушение уникального индекса MongoDB (код `11000`) |
 | `404` | `NOT_FOUND` | Неизвестный маршрут |
 | `500` | `INTERNAL` | Непредвиденная ошибка; в production `message` = `Internal server error` |
+| `401` | `UNAUTHENTICATED` | Нет токена `Authorization: Bearer`, токен неверный или просрочен, либо пользователь, членство или организация из токена больше не существуют (`GET /auth/me`) (REV-206) |
+| `401` | `INVALID_CREDENTIALS` | `POST /auth/login`: неверный пароль или неизвестный e-mail; ответ один и тот же (REV-206) |
+| `409` | `EMAIL_TAKEN` | `POST /auth/register`: аккаунт с таким e-mail уже есть (уникальный индекс `users.email`, любой регистр) (REV-206) |
 | `400` | `INVALID_URL` | `POST /leads`: `originalUrl` не разбирается как URL |
 | `404` | `LEAD_NOT_FOUND` | Лид не найден (`/leads/:id`, `/audits/trigger`, `/mvp/generate`, `POST /mvp/:id/edit`, `PATCH /mvp/:id/tokens`, `POST /mvp/:id/versions/:n/restore`, `/outreach/*`) |
 | `409` | `LEAD_NOT_AUDITABLE` | `POST /audits/trigger`: лид не в `QUEUED` / `AUDIT_FAILED` или изменился во время постановки; `details.status` |
@@ -877,6 +924,9 @@ interface IAnalyticsEvent {
 ### 5.1. Управление лидами и аудитами (`/leads`, `/audits`)
 | Метод | Эндпоинт | Описание | Body / Параметры |
 |---|---|---|---|
+| `POST` | `/auth/register` | **Публичный** (REV-206). Создать студию и её владельца одной транзакцией (`createOrganizationWithOwner`) и сразу войти. `201 { token, user, organization, role }`; `400 VALIDATION_ERROR`; `409 EMAIL_TAKEN` | `RegisterSchema`: `{ email, password (10–128), organizationName (1–100), name? }` |
+| `POST` | `/auth/login` | **Публичный** (REV-206). Вход; `200` в том же виде, что регистрация; `401 INVALID_CREDENTIALS` | `LoginSchema`: `{ email, password }` |
+| `GET` | `/auth/me` | Текущий пользователь, организация и роль из базы, без токена в ответе; `401 UNAUTHENTICATED` | — |
 | `POST` | `/leads` | Создать лид и первый аудит (`QUEUED`) в одной транзакции и поставить аудит в очередь; если очередь не ответила за 5 с — лид `AUDIT_FAILED` и `503 AUDIT_QUEUE_UNAVAILABLE` (REV-202) | `CreateLeadSchema`: `{ businessName, originalUrl, contactEmail?, niche, city?, contactPhone?, ownerName?, operatorLocale? }` (без e-mail аудит берет его с сайта, REV-45) |
 | `GET` | `/leads` | Список лидов с фильтрами и пагинацией (`pagination.total`); каждый лид несет краткую сводку полноты MVP (`completeness`). `search` ищет подстроку без учета регистра (спецсимволы экранируются). Дашборд загружает все страницы по `limit=100` (REV-43) | `?status=&niche=&complexity=&search=&page=&limit=` (`limit` ≤ 100, по умолчанию 20) |
 | `GET` | `/leads/stats` | Счетчики по всей воронке без учета фильтров списка → `{ total, byStatus }` (`ILeadStats`); источник KPI-карточек дашборда (REV-43) | — |
@@ -1030,12 +1080,12 @@ graph LR
    * Blacklist доменов: исключение правительственных сайтов, банков, крупных корпораций, сайтов с явным указанием `no-outreach`.
    * Автоматический мониторинг репутации IP и доменов отправки (Postmaster Tools API).
 3. **Аутентификация и права доступа в Дашборде:**
-   * JWT Access/Refresh tokens в `httpOnly`, `Secure`, `SameSite=Strict` cookie.
+   * JWT (HS256, 7 дней) в заголовке `Authorization: Bearer`; пароли хэшируются `scrypt` (REV-206). Refresh-токенов и cookie нет.
    * RBAC (Role-Based Access Control):
      - `Admin`: настройка SMTP, API-ключей, управление пользователями.
      - `Operator / Reviewer`: просмотр лидов, правка писем, ручной аппрув отправки.
      - `Viewer`: просмотр аналитики без права отправки.
-   * *Статус:* аутентификация и RBAC пока не реализованы; дашборд и API рассчитаны на одного оператора в закрытом окружении.
+   * *Статус:* вход и организации реализованы (REV-206, роль `owner`). Роли `operator` и `viewer` с приглашениями — REV-207; изоляция данных студий — REV-209.
 4. **Внешние источники данных и LLM (REV-26…REV-37):**
    * **Discovery:** запросы к Nominatim/Overpass идут с идентифицирующим `User-Agent` и конкурентностью 1; Google Maps не парсится, используется только официальный Places API. Импорт берет данные кандидатов только из сохраненного результата задачи, а не из тела запроса, поэтому клиент не может подменить сайт или контакты.
    * **Геолокация оператора:** обратное геокодирование проксируется через API и ограничено уровнем города, чтобы не возвращать улицу оператора.

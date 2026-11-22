@@ -386,14 +386,15 @@ graph TD
   - лиды и аудиты: `INVALID_URL`, `LEAD_NOT_FOUND`, `LEAD_NOT_AUDITABLE`, `AUDIT_NOT_FOUND`, `AUDIT_QUEUE_UNAVAILABLE`;
   - MVP: `LLM_PROVIDER_NOT_ALLOWED`, `NO_COMPLETED_AUDIT`, `MVP_GENERATION_NOT_ALLOWED`, `MVP_ALREADY_GENERATED`, `MVP_NOT_FOUND`, `MVP_EDIT_NOT_ALLOWED`, `MVP_EDIT_FAILED`, `MVP_EDIT_TIMEOUT`, `MVP_PREVIOUS_GENERATOR`, `MVP_VERSION_NOT_FOUND`, `MVP_VERSION_UNUSABLE`, `PREVIEW_NOT_FOUND`; код сбоя воркера в `Lead.generationFailure` — `MVP_PAGE_UNAVAILABLE` (REV-137);
   - аутрич: `LEAD_NOT_AWAITING_APPROVAL`, `LEAD_NOT_REJECTABLE`, `NO_CONTACT_EMAIL`, `EMAIL_QUEUE_UNAVAILABLE`, `EMAIL_PROVIDER_NOT_CONFIGURED`, `EMAIL_TEST_TIMEOUT`, `EMAIL_SEND_FAILED`;
-  - поиск бизнесов: `DISCOVERY_JOB_NOT_FOUND`, `DISCOVERY_JOB_NOT_COMPLETED`, `GEOCODING_UNAVAILABLE`, `PLACE_NOT_FOUND`.
+  - поиск бизнесов: `DISCOVERY_JOB_NOT_FOUND`, `DISCOVERY_JOB_NOT_COMPLETED`, `GEOCODING_UNAVAILABLE`, `PLACE_NOT_FOUND`;
+  - аккаунты и вход (REV-206): `UNAUTHENTICATED`, `INVALID_CREDENTIALS`, `EMAIL_TAKEN`.
 
   Клиенты (дашборд) выбирают поведение по `error.code` и показывают оператору `error.message`.
 
 #### 3.5.2. База данных (MongoDB & Mongoose)
 * **Требование 3.5.2.1:** Использование официального ODM `mongoose` с поддержкой индексов для быстрого поиска по статусам, датам и URL.
 * **Требование 3.5.2.2:** Обязательные коллекции:
-  1. `users`: операторы и администраторы системы (хранение хэшей паролей `bcrypt`, роли `ADMIN`, `OPERATOR`, `ANALYST`).
+  1. `organizations`, `users`, `memberships` (REV-206): студия, её пользователи и членство с ролью (сейчас только `owner`; `operator` и `viewer` добавляет REV-207). Пароль хранится как `scrypt$<соль>$<ключ>`, никогда открытым текстом.
   2. `leads`: метаданные о бизнесе, контакты, текущий статус в воронке.
   3. `audits`: детальные данные аудита, нарушения axe-core (`axeViolations`, с усечением HTML и узлов, REV-102), web vitals, ссылки на скриншоты, скоринг.
   4. `mvp_projects`: страница модели, ее тема, цвета и шрифты оператора, флаги фактов, версии, ссылки на опубликованное демо.
@@ -449,7 +450,7 @@ graph TD
 ### 4.2. Безопасность и соответствие законодательству
 * **Изоляция стороннего кода:** Все демонстрационные MVP хостятся на отдельном домене (например, `revampdemo.com`), не имеющем доступа к сессионным cookie основного приложения и API-ключам.
 * **Защита фреймов:** `<iframe>` в панели оператора должен быть изолирован директивами `sandbox="allow-scripts allow-same-origin"`.
-* **Защита API:** Аутентификация операторов по стандарту JWT (Access токен 15 мин, Refresh токен 7 дней в `httpOnly`, `Secure` cookies).
+* **Защита API (REV-206):** Регистрация студии и вход по e-mail и паролю (`POST /auth/register`, `POST /auth/login`); пароль хэшируется `scrypt` со случайной солью, сравнение за постоянное время, а неизвестный e-mail и неверный пароль дают один и тот же ответ `401 INVALID_CREDENTIALS`. Сессия — JWT (HS256, подпись `JWT_SECRET`, не короче 32 знаков) на 7 дней в заголовке `Authorization: Bearer`; refresh-токена и серверного выхода нет. Токен нужен каждому маршруту, кроме `/health`, `/auth/register`, `/auth/login`, `/track/*` (получатели писем и страницы MVP, у них токен кампании) и `GET /mvp/preview/:slug` (открывается в `iframe`, который не может послать заголовок); перечень проверяет тест, обходящий все маршруты. Отбор данных по организации (изоляция студий) — REV-209; роли и приглашения — REV-207.
 * **Соблюдение почтовых стандартов:** Обязательная настройка SPF, DKIM и DMARC для всех исходящих доменов. Обработка заголовка отписки по стандарту RFC 8058.
 * **Локальный LLM-провайдер:** Claude Code CLI запускается без инструментов, MCP-серверов и пользовательских/проектных настроек, во временной рабочей папке, с таймаутом (`CLAUDE_CLI_TIMEOUT_MS`, по умолчанию 120 с).
 * **Геолокация оператора:** обратное геокодирование выполняется через API на уровне города, без возврата адреса улицы.
