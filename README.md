@@ -124,10 +124,11 @@ flowchart LR
 ├── deploy/              # Продакшен-деплой (Docker, Nginx, скрипты)
 ├── scripts/             # Сервисные скрипты
 ├── docker-compose.yml   # MongoDB 7.0, Redis 7.0, MinIO
-└── AGENTS.md            # Правила для ИИ-разработчика (конвейер тикетов, гейты)
+├── docs/agents/        # ticket-pipeline.md: полный конвейер тикетов и DoD (REV-205)
+└── AGENTS.md            # Правила для ИИ-разработчика; правила областей — в apps/*/AGENTS.md и packages/db/AGENTS.md (REV-205)
 ```
 
-Документация (этот репозиторий, `revamp-docs`) лежит рядом с кодом как `../Revamp-docs`: `blueprint.md`, `spec.md`, `research.md`, `milestones.md`, `AGENTS.md`, `architecture-review.md`, `PROJECT_COMPLETION_REPORT.md`.
+Документация (этот репозиторий, `revamp-docs`) лежит рядом с кодом как `../Revamp-docs`: `blueprint.md`, `spec.md`, `research.md`, `milestones.md`, `AGENTS.md`, `architecture-review.md`, `PROJECT_COMPLETION_REPORT.md`, `INDEX.md`.
 
 ---
 
@@ -158,6 +159,7 @@ flowchart LR
 * 🔬 [**`research.md`**](./research.md) — Архитектурные исследования, ключевые решения (ADR), пользовательские сценарии (CJM) и конкурентный анализ.
 * ⏱️ [**`milestones.md`**](./milestones.md) — 4-недельная ускоренная дорожная карта с детализацией по дням, а также развитие после релиза (`REV-21` — `REV-41`) со статусами.
 * 🤖 [**`AGENTS.md`**](./AGENTS.md) — Руководство и системные промпты для автономных ИИ-агентов платформы и ИИ-разработчика.
+* 🗂️ [**`INDEX.md`**](./INDEX.md) — Указатель разделов больших документов (заголовок → диапазон строк), чтобы агенты читали один раздел, а не весь файл (REV-205). Генерируется `npm run docs:index` в Revamp-dev; после правок документов перегенерируйте и закоммитьте его.
 
 ---
 
