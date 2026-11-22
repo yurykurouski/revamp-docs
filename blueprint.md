@@ -925,7 +925,7 @@ interface IMembership {
 | Метод | Эндпоинт | Описание | Body / Параметры |
 |---|---|---|---|
 | `POST` | `/auth/register` | **Публичный** (REV-206). Создать студию и её владельца одной транзакцией (`createOrganizationWithOwner`) и сразу войти. `201 { token, user, organization, role }`; `400 VALIDATION_ERROR`; `409 EMAIL_TAKEN` | `RegisterSchema`: `{ email, password (10–128), organizationName (1–100), name? }` |
-| `POST` | `/auth/login` | **Публичный** (REV-206). Вход; `200` в том же виде, что регистрация; `401 INVALID_CREDENTIALS` | `LoginSchema`: `{ email, password }` |
+| `POST` | `/auth/login` | **Публичный** (REV-206). Вход; `200` в том же виде, что регистрация; `401 INVALID_CREDENTIALS`; `401 UNAUTHENTICATED`, если пароль верный, но у пользователя нет членства или организации | `LoginSchema`: `{ email, password }` |
 | `GET` | `/auth/me` | Текущий пользователь, организация и роль из базы, без токена в ответе; `401 UNAUTHENTICATED` | — |
 | `POST` | `/leads` | Создать лид и первый аудит (`QUEUED`) в одной транзакции и поставить аудит в очередь; если очередь не ответила за 5 с — лид `AUDIT_FAILED` и `503 AUDIT_QUEUE_UNAVAILABLE` (REV-202) | `CreateLeadSchema`: `{ businessName, originalUrl, contactEmail?, niche, city?, contactPhone?, ownerName?, operatorLocale? }` (без e-mail аудит берет его с сайта, REV-45) |
 | `GET` | `/leads` | Список лидов с фильтрами и пагинацией (`pagination.total`); каждый лид несет краткую сводку полноты MVP (`completeness`). `search` ищет подстроку без учета регистра (спецсимволы экранируются). Дашборд загружает все страницы по `limit=100` (REV-43) | `?status=&niche=&complexity=&search=&page=&limit=` (`limit` ≤ 100, по умолчанию 20) |
