@@ -612,7 +612,7 @@ erDiagram
 ```typescript
 interface ILead {
   _id: Types.ObjectId;
-  tenantId?: Types.ObjectId;     // студия (организация), REV-208; у лидов до разделения нет, пока REV-210 не назначит
+  tenantId?: Types.ObjectId;     // студия (организация), REV-208; у лидов до студий нет, пока не прошёл migrate:tenants (REV-209)
   businessId?: Types.ObjectId;   // общий Business сайта (REV-208); частичный уникальный индекс { tenantId, businessId }
   businessName: string;
   originalUrl: string;
@@ -754,6 +754,7 @@ interface IAudit {
 ```typescript
 interface IMvpProject {
   _id: Types.ObjectId;
+  tenantId?: Types.ObjectId;      // студия лида (REV-209); по ней API отбирает данные студии
   auditId: Types.ObjectId;
   leadId: Types.ObjectId;         // уникальный индекс (REV-201): один проект на лид; перегенерация обновляет его на месте
   previewSlug: string;            // e.g. "dental-art-a1b2c3"; не меняется при перегенерации
@@ -822,6 +823,7 @@ interface IMvpProject {
 ```typescript
 interface IEmailCampaign {
   _id: Types.ObjectId;
+  tenantId?: Types.ObjectId;      // студия лида (REV-209)
   leadId: Types.ObjectId;         // уникальный индекс (REV-201): одна кампания на лид; одобрение перезаписывает ее
   auditId: Types.ObjectId;
   mvpProjectId: Types.ObjectId;
@@ -875,6 +877,9 @@ interface IAnalyticsEvent {
 * Скрипт отказывается работать при `NODE_ENV=production`, с `mongodb+srv` и с любым хостом, кроме `localhost`, `127.0.0.1`, `::1` и `mongo` (`assertLocalSeedTarget`).
 * Экспорт: `npm run db:dump` (`mongodump --archive --gzip` внутри контейнера `revamp-mongo`, файл `backups/<db>-<время>.archive.gz`) и `npm run db:restore -- <файл> [--drop]` (`mongorestore`). Без `MONGO_CONTAINER` используется `revamp-mongo`, а URI с портом, отличным от 27017, отклоняется. Пароль передаётся через окружение и конфиг-файл внутри контейнера, не через аргументы командной строки.
 
+
+#### Слой доступа к данным студии (REV-209)
+Лиды, MVP, кампании и события принадлежат студии (`tenantId`). API читает и пишет их только через `scopeFor(tenantId)` (`apps/api/src/data/tenant-scope.ts`; `req.tenant` ставит `requireAuth`): каждый фильтр превращается в `{ $and: [{ tenantId }, фильтр] }`, создание и upsert проставляют студию, фильтр, обновление или документ, называющие `tenantId`, отклоняются, конвейеры агрегации со стадиями `$lookup`/`$unionWith`/`$merge`/`$out`/`$graphLookup` запрещены. Запись другой студии отвечает тем же 404, что и несуществующая (`LEAD_NOT_FOUND`, `MVP_NOT_FOUND`, `AUDIT_NOT_FOUND`, `NO_COMPLETED_AUDIT`, `DISCOVERY_JOB_NOT_FOUND`). Аудиты и бизнесы общие: аудит отдаётся только через лид студии. Публичные маршруты (`/track/*`, `GET /mvp/preview/:slug`) берут студию из секрета: кампания по `trackingToken` или MVP по slug, дальше всё в её студии; `leadId` из тела запроса не принимается. Поиск Discovery несёт `tenantId` в данных задачи; чужой или безымянный отвечает `DISCOVERY_JOB_NOT_FOUND`. Тест `tenant-guard.spec.ts` падает на прямом запросе к четырём моделям вне `data/`, `tenant-isolation.spec.ts` на настоящем MongoDB проверяет каждый маршрут из чужой студии.
 
 #### 6. `businesses` (REV-208)
 ```typescript
