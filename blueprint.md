@@ -961,8 +961,9 @@ interface IInvitation {                      // REV-207
 | `POST` | `/organization/invitations` | **Только владелец.** Создать приглашение; прежнее действующее на тот же адрес отзывается. `201 { invitation, token }`: токен показывается один раз, в базе только SHA-256; `409 ALREADY_MEMBER` | `CreateInvitationSchema`: `{ email, role: owner \| operator \| viewer }` |
 | `DELETE` | `/organization/invitations/:id` | **Только владелец.** Отозвать действующее приглашение своей студии; `404 INVITATION_NOT_FOUND` | — |
 | `PATCH` | `/organization/members/:userId` | **Только владелец.** Сменить роль участника своей студии; `409 LAST_OWNER`, `404 MEMBER_NOT_FOUND` | `ChangeMemberRoleSchema`: `{ role }` |
-| `DELETE` | `/organization/members/:userId` | **Только владелец.** Удалить участника из студии (аккаунт остаётся); `409 LAST_OWNER`, `404 MEMBER_NOT_FOUND` | — |
+| `DELETE` | `/organization/members/:userId` | **Только владелец.** Удалить участника из студии (аккаунт остаётся); `409 LAST_OWNER`, `404 MEMBER_NOT_FOUND`; неверный id — `400 INVALID_ID` (так же для `:id` приглашения и `:userId` в `PATCH`) | — |
 | `GET` | `/invitations/:token` | **Публичный** (REV-207): токен в ссылке — секрет. Студия, адрес, роль и срок для страницы присоединения; `404 INVITATION_NOT_FOUND`, `410 INVITATION_EXPIRED` | — |
+| `POST` | `/invitations/:token/join` | **Публичный** (REV-207): приглашённый, у которого уже есть аккаунт (в том числе удалённый из студии, которому вход не даёт студии), присоединяется по паролю аккаунта с приглашённым адресом. `200` с сессией приглашённой студии; `401 INVALID_CREDENTIALS` (неверный пароль и неизвестный адрес не различаются), `404`/`410`/`409` коды приглашения | `JoinInvitationSchema`: `{ password }` |
 | `POST` | `/invitations/:token/accept` | Вошедший пользователь принимает приглашение; адрес должен совпасть, роль любая. `200` с сессией приглашённой студии; `403 INVITATION_EMAIL_MISMATCH`, `409 ALREADY_MEMBER`, `410 INVITATION_EXPIRED` | — |
 | `POST` | `/auth/login` | **Публичный** (REV-206). Вход; `200` в том же виде, что регистрация; `401 INVALID_CREDENTIALS`; `401 UNAUTHENTICATED`, если пароль верный, но у пользователя нет членства или организации | `LoginSchema`: `{ email, password }` |
 | `GET` | `/auth/me` | Текущий пользователь, организация и роль из базы, без токена в ответе; `401 UNAUTHENTICATED` | — |
@@ -1119,7 +1120,7 @@ graph LR
    * Blacklist доменов: исключение правительственных сайтов, банков, крупных корпораций, сайтов с явным указанием `no-outreach`.
    * Автоматический мониторинг репутации IP и доменов отправки (Postmaster Tools API).
 3. **Аутентификация и права доступа в Дашборде:**
-   * JWT (HS256, 7 дней) в заголовке `Authorization: Bearer`; пароли хэшируются `scrypt` (REV-206). Refresh-токенов и cookie нет. Роль читается из базы на каждом запросе (REV-207), токен её не несёт.
+   * JWT (HS256, 7 дней) в заголовке `Authorization: Bearer`; пароли хэшируются `scrypt` (REV-206). Refresh-токенов и cookie нет. Роль читается из базы на каждом запросе (REV-207): подписанный в токене claim `role` игнорируется.
    * RBAC (Role-Based Access Control):
      - `Admin`: настройка SMTP, API-ключей, управление пользователями.
      - `Operator / Reviewer`: просмотр лидов, правка писем, ручной аппрув отправки.
