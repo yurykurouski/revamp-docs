@@ -34,7 +34,7 @@
 | Отдельный Dockerfile на сервис | Есть | три приложения; БД, Redis, MinIO — официальные образы |
 | Порядок слоёв | Есть | сначала `package*.json` и `npm ci`, затем исходники |
 | `.dockerignore` | Есть (REV-217) | корневой файл исключает `node_modules`, `dist`, `.git`, `.env*`, тесты, документы; тест в `deployment.spec.ts` |
-| ENV вместо хардкода | Частично | приложения читают `.env`; в `docker-compose.yml` MinIO `minioadmin/minioadmin` прописан в файле и в `minio-init` → REV-218 |
+| ENV вместо хардкода | Есть (REV-218) | приложения читают `.env`; MinIO в dev-файле берёт `S3_ACCESS_KEY`/`S3_SECRET_KEY` из `.env`, в `docker-compose.full.yml` все секреты обязательны (`:?`), без значений по умолчанию |
 | Тома для данных | Есть | `mongo_data`, `mongo_config`, `redis_data`, `minio_data`, тома certbot |
 | EXPOSE | Частично | есть у api (4000) и dashboard (80), нет у workers (порта нет — допустимо, но не указано) |
 | Размер образов | Есть (REV-217) | workers 958 MB при лимите 1 GB, запас небольшой |
@@ -43,9 +43,9 @@
 | Нет секретов в образах | Есть | секреты — только через `env_file` / `.env` (не в git) |
 | Non-root | Есть (REV-217) | api и workers — `node`, dashboard — `nginx` (unprivileged, порт 8080) |
 | Версии образов, не `latest` | Есть (REV-217) | MinIO и mc закреплены по digest, certbot `v5.10.0`, свои образы `revamp-<app>:<коммит>` через `IMAGE_TAG` в `deploy.sh`; тест запрещает `latest` |
-| `docker-compose.yml`, всё поднимается одной командой | **Нет** | dev-файл поднимает только БД, Redis, MinIO; приложения — в prod-файле, но без БД → REV-218 |
+| `docker-compose.yml`, всё поднимается одной командой | Есть (REV-218) | `docker-compose.full.yml` (проект `revamp-stack`): mongo, mongo-init, redis, minio, minio-init, api, workers, dashboard; `npm run stack:up` |
 | `depends_on` | Есть | `workers` ждёт здоровый `api`, `minio-init` ждёт `minio` |
-| Изолированные сети | Частично | prod — своя сеть; dev-файл — одна сеть по умолчанию, порты БД открыты на хост → REV-218 |
+| Изолированные сети | Есть (REV-218) | `frontend` (dashboard, api) и `backend` (api, workers, mongo, redis, minio); БД без портов на хосте, api и dashboard — только на 127.0.0.1; dev-файл с открытыми портами остаётся для `npm run dev` |
 | Тома для БД и загрузок | Есть | |
 | `.env` и `.env.example` | Есть | |
 | README: запуск | Есть | `npm run setup`, `npm run dev`, `docker:up` |
@@ -56,7 +56,7 @@
 | Пункт | Статус |
 | --- | --- |
 | Healthcheck у каждого контейнера | Почти: mongo, redis, minio, api, dashboard, workers (REV-217) есть; nginx, certbot — нет |
-| Лимиты ресурсов | Частично: только `workers` 2 GB в prod |
+| Лимиты ресурсов | Есть в `docker-compose.full.yml` (REV-218): api 512 MB/1 CPU, workers 2 GB/2, dashboard 128 MB/0.5, mongo 1 GB/1, minio 512 MB/0.5, redis 256 MB/0.5; в prod-файле — только workers |
 | Graceful shutdown | **Есть:** API (`apps/api/src/shutdown.ts`, лимит 8 с под 10 с Docker, закрывает сервер, очереди, Redis, MongoDB, тесты) и workers (`SIGINT`/`SIGTERM`) |
 | Автоперезапуск | Есть: `restart: always` / `unless-stopped` |
 | JSON-логи | Нет: `console.*`; зато логи пишутся в stdout и ротируются драйвером `json-file` (20 MB × 5) |
@@ -69,7 +69,8 @@
 
 ## 5. Известные риски
 
-* `docker compose up` для MongoDB без обёртки `npm run docker:up` оставляет базу без пользователей и replica set (описано в README и AGENTS.md); закрывается init-сервисом в REV-218.
+* Dev-файл `docker-compose.yml` без обёртки `npm run docker:up` оставляет MongoDB без пользователей и replica set (README, AGENTS.md); полный стек `docker-compose.full.yml` делает это init-сервисом `mongo-init`.
+* В полном стеке ссылки предпросмотра MVP используют адрес MinIO внутри сети (`http://minio:9000`) и недоступны из браузера без публичного `S3_ENDPOINT`.
 * В prod-файле нет Mongo/Redis/MinIO: управляемые сервисы (Atlas, Upstash, R2) — осознанный выбор, но на защите нужно показать и полный локальный стек.
 * Продакшен-сервера нет (REV-211): деплой собирает образы, но SSH-шаг пропускается.
 
@@ -78,10 +79,12 @@
 | Тикет | Что закрывает | Влияние на оценку |
 | --- | --- | --- |
 | REV-217 (сделано, PR #138) | `.dockerignore`, non-root, workers < 1 GB, healthcheck workers, закреплённые версии | убирает нарушения минимума (критично) |
-| REV-218 | один `docker compose up`, сети, секреты MinIO из `.env`, лимиты | убирает нарушение минимума |
+| REV-218 (сделано, PR #139) | один `npm run stack:up`, сети, секреты из `.env`, лимиты | убирает нарушение минимума |
 | REV-219 | README: образы, ENV, диаграмма, ресурсы, метрики | закрывает пункт документации минимума |
 | REV-220 | JSON-логи, `/metrics`, override-файлы, Docker secrets, debug | путь к 8–10 |
 
 ## 7. Метрики для защиты
+
+Полный стек (`npm run stack:up`, измерено 22.11.2026): первый запуск с тремя сборками образов при тёплом кэше слоёв — 123 с; запуск с пустых томов при готовых образах — 31 с; в простое все контейнеры вместе около 390 MB (workers 125, mongo 125, minio 73, api 41, dashboard 12, redis 10 MB); остановка workers и api по SIGTERM — код выхода 0 за 0.3 с.
 
 Размеры и время сборки до — в разделе 2. После тикетов добавить: размеры после, холодный старт всего стека, `docker stats` под аудитом (RAM/CPU), повторную сборку без изменений кода (кэш слоёв).
