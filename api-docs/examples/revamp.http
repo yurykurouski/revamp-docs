@@ -1,0 +1,100 @@
+# Requests for the VS Code "REST Client" or JetBrains HTTP Client. Run "login" first: its token is reused below.
+# Set @password in your local copy; do not commit a real password.
+@api = http://localhost:4000/api/v1
+@email = demo-owner@revamp-demo.test
+@password = <the demo owner password from the Revamp-dev README>
+
+### Health (public)
+GET {{api}}/health
+
+### login
+# @name login
+POST {{api}}/auth/login
+Content-Type: application/json
+
+{ "email": "{{email}}", "password": "{{password}}" }
+
+###
+@token = {{login.response.body.data.token}}
+
+### Current session
+GET {{api}}/auth/me
+Authorization: Bearer {{token}}
+
+### Pipeline counters
+GET {{api}}/leads/stats
+Authorization: Bearer {{token}}
+
+### Leads waiting for review, first page of 20
+GET {{api}}/leads?status=NEEDS_APPROVAL&page=1&limit=20
+Authorization: Bearer {{token}}
+
+### Search leads
+GET {{api}}/leads?search=dental
+Authorization: Bearer {{token}}
+
+### Add a lead
+# @name addLead
+POST {{api}}/leads
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "businessName": "Smile Dental Clinic", "originalUrl": "https://smile-dental.example", "niche": "dental", "operatorLocale": "en" }
+
+###
+@leadId = {{addLead.response.body.data.id}}
+
+### The lead and its audit
+GET {{api}}/leads/{{leadId}}
+Authorization: Bearer {{token}}
+
+### Retry a failed audit
+POST {{api}}/audits/trigger
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "leadId": "{{leadId}}" }
+
+### The prototype (MVP) by lead id
+GET {{api}}/mvp/{{leadId}}
+Authorization: Bearer {{token}}
+
+### LLM providers
+GET {{api}}/mvp/providers
+Authorization: Bearer {{token}}
+
+### Regenerate with a chosen provider
+POST {{api}}/mvp/generate
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "auditId": "{{leadId}}", "provider": "anthropic", "forceRegenerate": true }
+
+### Error example: validation (400 VALIDATION_ERROR)
+POST {{api}}/leads
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "businessName": "X", "originalUrl": "not a url" }
+
+### Error example: no token (401 UNAUTHENTICATED)
+GET {{api}}/leads
+
+### Error example: malformed id (400 INVALID_ID)
+POST {{api}}/outreach/not-an-id/reject
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "reason": "testing errors" }
+
+### Discovery: search OpenStreetMap
+# @name discovery
+POST {{api}}/discovery
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "provider": "osm", "niche": "dental", "location": "Vilnius, Lithuania", "limit": 10 }
+
+### Discovery: poll the job
+GET {{api}}/discovery/{{discovery.response.body.data.jobId}}
+Authorization: Bearer {{token}}

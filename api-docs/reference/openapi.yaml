@@ -1,0 +1,1944 @@
+openapi: 3.0.3
+info:
+  title: Revamp SaaS API
+  version: 1.0.0
+  description: |
+    Revamp finds local businesses with dated websites, audits each site in a real browser, has a model design a new
+    home page from the site's own content, and sends the owner a personal email with the prototype **only after an
+    operator approves it** (Human-in-the-Loop).
+
+    This specification describes the REST API in `apps/api` (Express 4, TypeScript) of the
+    [Revamp-dev](https://github.com/yurykurouski/revamp-dev) monorepo. Long work (audits, generation, publishing,
+    email) runs in BullMQ workers; the API stores the request, queues a job and answers at once (`202`), and the
+    client polls the resource.
+
+    * **Base URL:** `/api/v1` (`API_PREFIX`). Locally `http://localhost:4000/api/v1`.
+    * **Authentication:** `Authorization: Bearer <JWT>` from `POST /auth/register` or `POST /auth/login`
+      (HS256, 7 days, no refresh token). Routes marked *public* need no token. See `guides/authentication.md`.
+    * **Studios (tenants):** every lead, MVP, campaign and event belongs to the caller's studio. A record of another
+      studio answers the same `404` as a missing one.
+    * **Roles:** `owner` (everything, plus members), `operator` (reads and writes), `viewer` (reads only; every
+      non-GET request answers `403 FORBIDDEN`).
+    * **Success envelope:** `{ "success": true, "data": … }`, sometimes with `message`, `pagination` or `total`.
+    * **Error envelope:** `{ "success": false, "error": { "code", "message", "details?" } }`; branch on `code`.
+      The codes are listed in `ApiErrorCode` and explained in `guides/errors.md`.
+    * **Request validation:** every body and query passes a Zod schema of `@revamp/validation` before any work.
+      Request schemas in `schemas/requests.yaml` are generated from those Zod schemas.
+  contact:
+    name: Revamp
+    url: https://github.com/yurykurouski/revamp-dev
+  license:
+    name: Proprietary (diploma project)
+    url: https://github.com/yurykurouski/revamp-dev
+servers:
+  - url: http://localhost:4000/api/v1
+    description: Local development stack (`npm run dev` in Revamp-dev)
+security:
+  - bearerAuth: []
+tags:
+  - name: Health
+    description: Liveness and dependency status
+  - name: Auth
+    description: Sign-up, sign-in and the current session (REV-206)
+  - name: Organization
+    description: Members and invitations of the caller's studio; owners only (REV-207)
+  - name: Invitations
+    description: Public join flow of an invitation link (REV-207)
+  - name: Leads
+    description: Businesses the studio pursues and their pipeline status
+  - name: Audits
+    description: Deterministic audit of the lead's site (Playwright, axe-core, web vitals, design critique)
+  - name: MVP
+    description: The model-designed prototype page, its changes and versions
+  - name: Outreach
+    description: Human-in-the-Loop approval gate and test sends
+  - name: Discovery
+    description: Finding local businesses on OpenStreetMap or Google Places
+  - name: Tracking
+    description: Public endpoints called by email clients and by the published prototype pages
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      operationId: getHealth
+      summary: Check the API, MongoDB and Redis
+      description: |
+        Used by the Docker `HEALTHCHECK` (`curl -f`). `200` when MongoDB is `connected` and Redis is `ready`/`connect`,
+        otherwise `503` with the same body. This route does not use the standard envelope.
+      security: []
+      responses:
+        '200':
+          description: Every dependency is reachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+              example:
+                status: ok
+                timestamp: '2026-11-22T10:15:00.000Z'
+                services: { api: healthy, mongodb: connected, redis: connected }
+        '503':
+          description: MongoDB or Redis is not reachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+              example:
+                status: degraded
+                timestamp: '2026-11-22T10:15:00.000Z'
+                services: { api: healthy, mongodb: disconnected, redis: connected }
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      operationId: register
+      summary: Create a studio and its owner, or join by invitation
+      description: |
+        Without `invitationToken`, creates the studio (`organizationName` is then required) and its owner in one
+        transaction and signs in. With `invitationToken`, creates the user and a membership with the invited role; the
+        email must match the invitation and `organizationName` is ignored.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../schemas/requests.yaml#/Register' }
+            examples:
+              newStudio:
+                summary: A new studio
+                value: { email: owner@studio.example, password: correct-horse-9, organizationName: Pixel Studio, name: Anna }
+              invited:
+                summary: Joining by invitation
+                value: { email: operator@studio.example, password: correct-horse-9, invitationToken: Zr3x0J9qkM2vT1aYc8LpWq }
+      responses:
+        '201':
+          description: Account created and signed in
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSessionEnvelope' }
+              example:
+                success: true
+                data:
+                  token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2NzNm…
+                  user: { id: 673f1b2c9d4e5a0012ab34cd, email: owner@studio.example, name: Anna }
+                  organization: { id: 673f1b2c9d4e5a0012ab34ce, name: Pixel Studio }
+                  role: owner
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/InvitationEmailMismatch' }
+        '404': { $ref: '#/components/responses/InvitationNotFound' }
+        '409':
+          description: '`EMAIL_TAKEN`: an account with this email exists (any letter case)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              example: { success: false, error: { code: EMAIL_TAKEN, message: An account with this email already exists } }
+        '410': { $ref: '#/components/responses/InvitationExpired' }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Sign in with email and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../schemas/requests.yaml#/Login' }
+            example: { email: owner@studio.example, password: correct-horse-9 }
+      responses:
+        '200':
+          description: Signed in; the same shape as registration
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSessionEnvelope' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401':
+          description: |
+            `INVALID_CREDENTIALS` for a wrong password or an unknown email (the two are not told apart), or
+            `UNAUTHENTICATED` when the password is right but the user has no studio any more.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              example: { success: false, error: { code: INVALID_CREDENTIALS, message: Email or password is incorrect } }
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      operationId: getCurrentSession
+      summary: The signed-in user, studio and role
+      description: The role is read from the membership in the database, not from the token, so a changed role shows at once.
+      responses:
+        '200':
+          description: The current session without the token
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data: { $ref: '#/components/schemas/AuthContext' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /organization/members:
+    get:
+      tags: [Organization]
+      operationId: listMembers
+      summary: Members and pending invitations of the studio
+      responses:
+        '200':
+          description: Members and invitations that are still valid (without their tokens)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data: { $ref: '#/components/schemas/OrganizationMembers' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /organization/invitations:
+    post:
+      tags: [Organization]
+      operationId: createInvitation
+      summary: Invite a person to the studio
+      description: A pending invitation to the same address is revoked. The token is returned **once**; only its SHA-256 is stored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../schemas/requests.yaml#/CreateInvitation' }
+            example: { email: operator@studio.example, role: operator }
+      responses:
+        '201':
+          description: Invitation created; build the join link `/invite/<token>` from the token
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data: { $ref: '#/components/schemas/CreatedInvitation' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: '`ALREADY_MEMBER`: the address already belongs to a member'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /organization/invitations/{id}:
+    delete:
+      tags: [Organization]
+      operationId: revokeInvitation
+      summary: Revoke a pending invitation
+      parameters:
+        - $ref: '#/components/parameters/ObjectIdPath'
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '400': { $ref: '#/components/responses/InvalidId' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/InvitationNotFound' }
+
+  /organization/members/{userId}:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        description: The member's user id (24-character hexadecimal ObjectId)
+        schema: { $ref: '#/components/schemas/ObjectId' }
+    patch:
+      tags: [Organization]
+      operationId: changeMemberRole
+      summary: Change a member's role
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../schemas/requests.yaml#/ChangeMemberRole' }
+            example: { role: viewer }
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/MemberNotFound' }
+        '409': { $ref: '#/components/responses/LastOwner' }
+    delete:
+      tags: [Organization]
+      operationId: removeMember
+      summary: Remove a member from the studio (the account stays)
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '400': { $ref: '#/components/responses/InvalidId' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/MemberNotFound' }
+        '409': { $ref: '#/components/responses/LastOwner' }
+
+  /invitations/{token}:
+    get:
+      tags: [Invitations]
+      operationId: previewInvitation
+      summary: What the join page shows
+      description: Public; the token in the link is the secret.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/InvitationToken'
+      responses:
+        '200':
+          description: The studio, address, role and expiry
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data: { $ref: '#/components/schemas/InvitationPreview' }
+              example:
+                success: true
+                data: { organizationName: Pixel Studio, email: operator@studio.example, role: operator, expiresAt: '2026-11-29T10:00:00.000Z' }
+        '404': { $ref: '#/components/responses/InvitationNotFound' }
+        '410': { $ref: '#/components/responses/InvitationExpired' }
+
+  /invitations/{token}/join:
+    post:
+      tags: [Invitations]
+      operationId: joinInvitationWithPassword
+      summary: Join with the password of an existing account
+      description: Public. For an invitee who already has an account with the invited address (also one removed from a studio, whose sign-in gives no studio).
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/InvitationToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../schemas/requests.yaml#/JoinInvitation' }
+            example: { password: correct-horse-9 }
+      responses:
+        '200':
+          description: Joined; a session of the invited studio
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSessionEnvelope' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401':
+          description: '`INVALID_CREDENTIALS`: wrong password or no account with the invited address'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404': { $ref: '#/components/responses/InvitationNotFound' }
+        '409':
+          description: '`ALREADY_MEMBER`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '410': { $ref: '#/components/responses/InvitationExpired' }
+
+  /invitations/{token}/accept:
+    post:
+      tags: [Invitations]
+      operationId: acceptInvitation
+      summary: Accept an invitation while signed in
+      description: The signed-in user's email must match the invitation; any role may accept.
+      parameters:
+        - $ref: '#/components/parameters/InvitationToken'
+      responses:
+        '200':
+          description: Accepted; a session of the invited studio
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSessionEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/InvitationEmailMismatch' }
+        '404': { $ref: '#/components/responses/InvitationNotFound' }
+        '409':
+          description: '`ALREADY_MEMBER`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '410': { $ref: '#/components/responses/InvitationExpired' }
+
+  /leads:
+    post:
+      tags: [Leads]
+      operationId: createLead
+      summary: Add a lead and queue its audit
+      description: |
+        Finds or creates the shared business of the site. If the business already has a completed audit, the lead is
+        created `AUDITED` with that audit and MVP generation is queued (`message` says so). Otherwise the lead and
+        its first audit (`QUEUED`) are written in one transaction and the audit job is queued.
+
+        If the queue does not accept the job within 5 s, the lead is moved to `AUDIT_FAILED` and the answer is
+        `503 AUDIT_QUEUE_UNAVAILABLE` with `details.leadId`; retry with `POST /audits/trigger`.
+        Without `contactEmail` the audit takes the email from the site; none is invented.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../schemas/requests.yaml#/CreateLead' }
+            example:
+              businessName: Smile Dental Clinic
+              originalUrl: https://smile-dental.example
+              niche: dental
+              city: Vilnius
+              operatorLocale: en
+      responses:
+        '201':
+          description: Lead created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  message: { type: string }
+                  data:
+                    type: object
+                    required: [id, lead, auditId]
+                    properties:
+                      id: { $ref: '#/components/schemas/ObjectId' }
+                      lead: { $ref: '#/components/schemas/Lead' }
+                      auditId: { $ref: '#/components/schemas/ObjectId' }
+                      jobId: { type: string, description: 'BullMQ job id of the audit (or of the generation when an audit was reused)' }
+              example:
+                success: true
+                message: Lead created and audit queued successfully
+                data:
+                  id: 6740a1f09d4e5a0012ab35aa
+                  lead:
+                    _id: 6740a1f09d4e5a0012ab35aa
+                    tenantId: 673f1b2c9d4e5a0012ab34ce
+                    businessId: 6740a1f09d4e5a0012ab35a9
+                    businessName: Smile Dental Clinic
+                    originalUrl: https://smile-dental.example
+                    domain: smile-dental.example
+                    niche: dental
+                    city: Vilnius
+                    source: manual
+                    operatorLocale: en
+                    status: QUEUED
+                    tags: []
+                    createdAt: '2026-11-22T10:20:00.000Z'
+                    updatedAt: '2026-11-22T10:20:00.000Z'
+                  auditId: 6740a1f09d4e5a0012ab35ab
+                  jobId: '41'
+        '400':
+          description: '`VALIDATION_ERROR` (body), or `INVALID_URL` when `originalUrl` cannot be parsed'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              example:
+                success: false
+                error:
+                  code: VALIDATION_ERROR
+                  message: 'originalUrl: Invalid url'
+                  details: { issues: [{ validation: url, code: invalid_string, message: Invalid url, path: [originalUrl] }] }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: '`LEAD_ALREADY_EXISTS`: the studio already has a lead for this site; `details.leadId` is that lead'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              example:
+                success: false
+                error: { code: LEAD_ALREADY_EXISTS, message: Your studio already has a lead for this site, details: { leadId: 6740a1f09d4e5a0012ab35aa } }
+        '503': { $ref: '#/components/responses/AuditQueueUnavailable' }
+    get:
+      tags: [Leads]
+      operationId: listLeads
+      summary: List leads with filters and pagination
+      description: |
+        Offset pagination: `page` (from 1) and `limit` (1–100, default 20). `search` matches a case-insensitive substring
+        of the business name, domain, contact email or city (special characters are escaped). Each lead carries a short MVP
+        completeness summary (`completeness`) when it has an MVP. The dashboard loads every page with `limit=100`.
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - name: status
+          in: query
+          description: One lead status
+          schema: { $ref: '#/components/schemas/LeadStatus' }
+        - name: niche
+          in: query
+          schema: { $ref: '#/components/schemas/Niche' }
+        - name: complexity
+          in: query
+          schema: { type: string, enum: [ONE_PAGE_BROCHURE, SMALL_MULTI_PAGE, COMPLEX, UNKNOWN] }
+        - name: search
+          in: query
+          schema: { type: string, maxLength: 100 }
+      responses:
+        '200':
+          description: One page of leads, one-page brochure sites first, then newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data, pagination]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/LeadListItem' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+              example:
+                success: true
+                data:
+                  - _id: 6740a1f09d4e5a0012ab35aa
+                    businessName: Smile Dental Clinic
+                    originalUrl: https://smile-dental.example
+                    domain: smile-dental.example
+                    niche: dental
+                    status: NEEDS_APPROVAL
+                    totalScore: 41
+                    tags: []
+                    completeness: { status: verified, score: 92, hasCriticalIssues: false, criticalIssues: [] }
+                    createdAt: '2026-11-22T10:20:00.000Z'
+                    updatedAt: '2026-11-22T10:31:12.000Z'
+                pagination: { total: 37, page: 1, limit: 20, totalPages: 2 }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /leads/stats:
+    get:
+      tags: [Leads]
+      operationId: getLeadStats
+      summary: Counts by status across the whole pipeline
+      description: Ignores the list filters; the source of the dashboard's KPI cards.
+      responses:
+        '200':
+          description: Total and per-status counts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data: { $ref: '#/components/schemas/LeadStats' }
+              example:
+                success: true
+                data: { total: 37, byStatus: { QUEUED: 2, AUDITED: 5, NEEDS_APPROVAL: 9, SENT: 12, OPENED: 6, REJECTED: 3 } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /leads/{id}:
+    get:
+      tags: [Leads]
+      operationId: getLead
+      summary: One lead and its latest audit
+      description: The audit is the lead's own newest audit, else the completed audit of its business; `null` when there is none.
+      parameters:
+        - $ref: '#/components/parameters/ObjectIdPath'
+      responses:
+        '200':
+          description: The lead and its audit
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data:
+                    type: object
+                    required: [lead, audit]
+                    properties:
+                      lead: { $ref: '#/components/schemas/Lead' }
+                      audit:
+                        type: object
+                        allOf: [{ $ref: '#/components/schemas/Audit' }]
+                        nullable: true
+        '400': { $ref: '#/components/responses/InvalidId' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/LeadNotFound' }
+
+  /audits/trigger:
+    post:
+      tags: [Audits]
+      operationId: triggerAudit
+      summary: Run (or retry) the audit of a lead
+      description: |
+        Allowed for a lead in `QUEUED` or `AUDIT_FAILED`; the lead goes back to `QUEUED`, its `auditError` is cleared
+        and a new `Audit` document is created. A lead further along answers `409 LEAD_NOT_AUDITABLE` with
+        `details.status`: an audit never moves a lead backwards.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../schemas/requests.yaml#/TriggerAudit' }
+            example: { leadId: 6740a1f09d4e5a0012ab35aa }
+      responses:
+        '202':
+          description: Audit job queued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  message: { type: string }
+                  data:
+                    type: object
+                    required: [leadId, auditId, status]
+                    properties:
+                      leadId: { $ref: '#/components/schemas/ObjectId' }
+                      auditId: { $ref: '#/components/schemas/ObjectId' }
+                      jobId: { type: string }
+                      status: { type: string, enum: [QUEUED] }
+              example:
+                success: true
+                message: Audit job queued
+                data: { leadId: 6740a1f09d4e5a0012ab35aa, auditId: 6740a3449d4e5a0012ab35c0, jobId: '42', status: QUEUED }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/LeadNotFound' }
+        '409':
+          description: '`LEAD_NOT_AUDITABLE`: the lead is not in `QUEUED`/`AUDIT_FAILED`, or changed while the audit was being queued'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              example:
+                success: false
+                error: { code: LEAD_NOT_AUDITABLE, message: An audit cannot be started while the lead is NEEDS_APPROVAL, details: { status: NEEDS_APPROVAL } }
+        '503': { $ref: '#/components/responses/AuditQueueUnavailable' }
+
+  /audits/{id}:
+    get:
+      tags: [Audits]
+      operationId: getAudit
+      summary: An audit by its id, or the latest audit of a lead by the lead's id
+      description: |
+        Audits are shared between studios (one per business), so an audit is returned only when a lead of the
+        caller's studio reads it. Given a lead id, the lead's latest audit is returned.
+      parameters:
+        - $ref: '#/components/parameters/ObjectIdPath'
+      responses:
+        '200':
+          description: The audit
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data: { $ref: '#/components/schemas/Audit' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404':
+          description: '`AUDIT_NOT_FOUND` (also for an invalid id)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /mvp/providers:
+    get:
+      tags: [MVP]
+      operationId: listLlmProviders
+      summary: LLM providers and models the generation can use
+      description: Availability comes from the last capability report of the AI worker in Redis; with no recent report every option is unavailable (`workers_offline`).
+      responses:
+        '200':
+          description: Providers with their models and availability
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data: { $ref: '#/components/schemas/LlmProvidersResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /mvp/generate:
+    post:
+      tags: [MVP]
+      operationId: generateMvp
+      summary: Generate or regenerate the lead's prototype page
+      description: |
+        `auditId` is an audit id or, when the client has none, the lead id. The given audit is used if it is
+        `COMPLETED`, otherwise the newest completed audit of the lead; a failed audit is never used.
+
+        Generates once from `AUDITED`; a lead that already has an MVP needs `forceRegenerate: true`. Generation is
+        refused while one runs and once outreach is scheduled or sent. The lead moves to `GENERATING` only if it is still
+        in the status that was checked, so two requests cannot both start.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../schemas/requests.yaml#/GenerateMvp' }
+            example: { auditId: 6740a1f09d4e5a0012ab35aa, forceRegenerate: false, provider: anthropic, operatorLocale: en }
+      responses:
+        '202':
+          description: Generation queued; poll `GET /leads/{id}` until the lead reaches `NEEDS_APPROVAL`
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  message: { type: string }
+                  data:
+                    type: object
+                    required: [leadId, auditId, status]
+                    properties:
+                      leadId: { $ref: '#/components/schemas/ObjectId' }
+                      auditId: { $ref: '#/components/schemas/ObjectId' }
+                      jobId: { type: string }
+                      status: { type: string, enum: [GENERATING] }
+              example:
+                success: true
+                message: MVP generation enqueued successfully
+                data: { leadId: 6740a1f09d4e5a0012ab35aa, auditId: 6740a1f09d4e5a0012ab35ab, jobId: '17', status: GENERATING }
+        '400':
+          description: '`VALIDATION_ERROR` (unknown provider, or a model of another provider) or `LLM_PROVIDER_NOT_ALLOWED` (a dev-only provider in production)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`NO_COMPLETED_AUDIT`: the lead has no completed audit (or is not the studio''s)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '409':
+          description: |
+            `MVP_ALREADY_GENERATED` (an MVP exists and `forceRegenerate` is not set) or `MVP_GENERATION_NOT_ALLOWED`
+            (generation running, outreach scheduled or sent, or the lead changed meanwhile); `details.status`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              example:
+                success: false
+                error: { code: MVP_ALREADY_GENERATED, message: This lead already has an MVP. Set forceRegenerate to replace it., details: { status: NEEDS_APPROVAL } }
+
+  /mvp/{id}:
+    get:
+      tags: [MVP]
+      operationId: getMvp
+      summary: The MVP project by its id, its lead's id or its preview slug
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: MVP id or lead id (ObjectId), or the preview slug
+          schema: { type: string }
+      responses:
+        '200':
+          description: The MVP project with its completeness report and versions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data: { $ref: '#/components/schemas/MvpProject' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/MvpNotFound' }
+
+  /mvp/preview/{slug}:
+    get:
+      tags: [MVP]
+      operationId: openMvpPreview
+      summary: Redirect to the published prototype page
+      description: 'Public, because an iframe cannot send a header; the slug is the secret. Sets `Content-Security-Policy` and `X-Frame-Options: SAMEORIGIN`.'
+      security: []
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '302':
+          description: Redirect to `fullPreviewUrl` in the demos bucket
+          headers:
+            Location: { schema: { type: string, format: uri } }
+        '404':
+          description: '`PREVIEW_NOT_FOUND`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /mvp/{id}/edit:
+    post:
+      tags: [MVP]
+      operationId: editMvp
+      summary: Change the page in the operator's own words
+      description: |
+        Synchronous: the API waits up to **420 s** for the `mvp-page-queue` worker. The page model gets the current page
+        and the instruction and returns the whole page; it is checked like a generation (one retry) and published as a
+        new version `change`. The lead's status does not change.
+      parameters:
+        - $ref: '#/components/parameters/MvpIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../schemas/requests.yaml#/EditMvp' }
+            example: { instruction: Move the booking button above the services list, operatorLocale: en }
+      responses:
+        '200': { $ref: '#/components/responses/MvpPageResult' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/MvpOrLeadNotFound' }
+        '409': { $ref: '#/components/responses/MvpNotChangeable' }
+        '502': { $ref: '#/components/responses/MvpEditFailed' }
+        '504': { $ref: '#/components/responses/MvpEditTimeout' }
+
+  /mvp/{id}/tokens:
+    patch:
+      tags: [MVP]
+      operationId: updateMvpTokens
+      summary: Set the operator's colors and fonts over the page theme
+      description: |
+        Waits up to **120 s**. The stored page is re-finished and re-published with the controls, with no model call
+        and no new version. Text on `bg` and `surface` must have a contrast of at least 4.5:1; fonts must be one of the
+        fixed pairings (`MVP_FONT_CHOICES`); `null` removes a group.
+      parameters:
+        - $ref: '#/components/parameters/MvpIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../schemas/requests.yaml#/UpdateMvpTokens' }
+            example:
+              colors: { primary: '#0f4c81', accent: '#f2a541', bg: '#ffffff', surface: '#f4f6f8', text: '#1b1f24' }
+              fonts: { heading: Poppins, body: Inter }
+      responses:
+        '200': { $ref: '#/components/responses/MvpPageResult' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/MvpOrLeadNotFound' }
+        '409': { $ref: '#/components/responses/MvpNotChangeable' }
+        '502': { $ref: '#/components/responses/MvpEditFailed' }
+        '504': { $ref: '#/components/responses/MvpEditTimeout' }
+
+  /mvp/{id}/versions/{n}/restore:
+    post:
+      tags: [MVP]
+      operationId: restoreMvpVersion
+      summary: Re-publish a stored version of the page
+      description: |
+        Waits up to **120 s**. Reads `v/<slug>/versions/<n>.html`, checks it against the current audit and publishes it,
+        with the current colors and fonts, as a new version `restore` (`from: n`). `applied: false, reason: unchanged`
+        when it is the page already published.
+      parameters:
+        - $ref: '#/components/parameters/MvpIdPath'
+        - name: 'n'
+          in: path
+          required: true
+          description: Version number (from 1)
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200': { $ref: '#/components/responses/MvpPageResult' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`MVP_NOT_FOUND`, `LEAD_NOT_FOUND` or `MVP_VERSION_NOT_FOUND`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '409':
+          description: '`MVP_PREVIOUS_GENERATOR`, `MVP_EDIT_NOT_ALLOWED`, or `MVP_VERSION_UNUSABLE` (the version no longer fits the audit; `details.problems`)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '502': { $ref: '#/components/responses/MvpEditFailed' }
+        '504': { $ref: '#/components/responses/MvpEditTimeout' }
+
+  /outreach/pending:
+    get:
+      tags: [Outreach]
+      operationId: listPendingOutreach
+      summary: Leads waiting for the operator's approval
+      description: Up to 50 leads in `NEEDS_APPROVAL`, most recently updated first.
+      responses:
+        '200':
+          description: Leads awaiting review
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data, total]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Lead' }
+                  total: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /outreach/{id}/approve:
+    post:
+      tags: [Outreach]
+      operationId: approveOutreach
+      summary: Approve the email (the Human-in-the-Loop gate)
+      description: |
+        The **only** way an email to a business is ever sent. Allowed only from `NEEDS_APPROVAL`. The lead moves to
+        `SCHEDULED` and its `EmailCampaign` is written in one MongoDB transaction filtered on the status, so two
+        approvals at once cannot both queue an email. The send is queued with a random delay of 15–45 s.
+
+        `subject` and `body` are required (there is no default copy). `body` is plain text: it is stored as is and as
+        escaped HTML with paragraphs and a hidden preheader. If the send cannot be queued within 5 s, the lead and
+        campaign go back to `NEEDS_APPROVAL` and the answer is `503 EMAIL_QUEUE_UNAVAILABLE`.
+      parameters:
+        - $ref: '#/components/parameters/ObjectIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../schemas/requests.yaml#/ApproveOutreach' }
+            example:
+              subject: A new home page for Smile Dental Clinic
+              preheader: We rebuilt your page from your own content
+              body: "Hello Anna,\n\nwe looked at smile-dental.example and made a faster, mobile-friendly version of your home page.\n\nBest regards,\nPixel Studio"
+      responses:
+        '200':
+          description: Approved and queued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/ApprovalResult' }
+              example:
+                success: true
+                message: Email approved by operator and queued for sending
+                data:
+                  campaignId: 6740a8229d4e5a0012ab3610
+                  leadId: 6740a1f09d4e5a0012ab35aa
+                  jobId: '9'
+                  status: SCHEDULED
+                  delayMs: 27311
+                  approvedAt: '2026-11-22T10:40:00.000Z'
+                  subject: A new home page for Smile Dental Clinic
+                  preheader: We rebuilt your page from your own content
+        '400':
+          description: '`INVALID_ID` or `VALIDATION_ERROR` (missing subject or body)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/LeadNotFound' }
+        '409':
+          description: '`LEAD_NOT_AWAITING_APPROVAL` (not in `NEEDS_APPROVAL`) or `NO_CONTACT_EMAIL` (the lead has no email)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              example:
+                success: false
+                error: { code: LEAD_NOT_AWAITING_APPROVAL, message: 'Only a lead awaiting approval can be approved; this lead is SCHEDULED.' }
+        '503':
+          description: '`EMAIL_QUEUE_UNAVAILABLE`: nothing will be sent; the lead is back in review; `details.leadId`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /outreach/{id}/reject:
+    post:
+      tags: [Outreach]
+      operationId: rejectOutreach
+      summary: Reject the outreach (lead → REJECTED)
+      description: Only before approval; the status filter makes the check and the update one atomic write.
+      parameters:
+        - $ref: '#/components/parameters/ObjectIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../schemas/requests.yaml#/RejectOutreach' }
+            example: { reason: The site was rebuilt last month }
+      responses:
+        '200':
+          description: Rejected
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      campaignId: { type: string, description: 'The lead id (kept for compatibility)' }
+                      leadId: { $ref: '#/components/schemas/ObjectId' }
+                      status: { type: string, enum: [REJECTED] }
+                      reason: { type: string }
+        '400':
+          description: '`INVALID_ID` or `VALIDATION_ERROR`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/LeadNotFound' }
+        '409':
+          description: '`LEAD_NOT_REJECTABLE`: outreach already approved, or the lead is closed'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /outreach/{id}/test:
+    post:
+      tags: [Outreach]
+      operationId: sendTestEmail
+      summary: Send the current draft to the operator's own address
+      description: |
+        Goes to the operator, not to the business, so it skips the approval gate; it carries no tracking pixel and never
+        changes the lead or its campaign. Waits up to 30 s for the email worker.
+      parameters:
+        - $ref: '#/components/parameters/ObjectIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../schemas/requests.yaml#/TestEmailOutreach' }
+            example: { testEmail: owner@studio.example, subject: A new home page for Smile Dental Clinic, body: "Hello Anna,\n\n…" }
+      responses:
+        '200':
+          description: Sent
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  message: { type: string }
+                  data:
+                    type: object
+                    required: [to, provider, sentAt]
+                    properties:
+                      to: { type: string, format: email }
+                      messageId: { type: string }
+                      provider: { type: string, example: resend }
+                      sentAt: { type: string, format: date-time }
+        '400':
+          description: '`INVALID_ID` or `VALIDATION_ERROR`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/LeadNotFound' }
+        '502':
+          description: '`EMAIL_SEND_FAILED`: the email provider refused the message'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: '`EMAIL_PROVIDER_NOT_CONFIGURED`: `EMAIL_PROVIDER` is not set in the API or in the workers'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '504':
+          description: '`EMAIL_TEST_TIMEOUT`: the workers did not answer within 30 s (the waiting job is removed)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /discovery:
+    post:
+      tags: [Discovery]
+      operationId: startDiscovery
+      summary: Search a maps provider for local businesses
+      description: Queues a search in `discovery-queue`; poll `GET /discovery/{jobId}`. Nothing is imported until the operator picks candidates.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../schemas/requests.yaml#/StartDiscovery' }
+            example: { provider: osm, niche: dental, location: 'Vilnius, Lithuania', limit: 20 }
+      responses:
+        '202':
+          description: Search queued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  message: { type: string }
+                  data:
+                    type: object
+                    required: [jobId]
+                    properties:
+                      jobId: { type: string }
+              example: { success: true, message: Discovery job queued successfully, data: { jobId: '128' } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /discovery/reverse-geocode:
+    get:
+      tags: [Discovery]
+      operationId: reverseGeocode
+      summary: Turn browser coordinates into a city name
+      parameters:
+        - { name: lat, in: query, required: true, schema: { type: number, minimum: -90, maximum: 90 } }
+        - { name: lng, in: query, required: true, schema: { type: number, minimum: -180, maximum: 180 } }
+        - { name: lang, in: query, description: 'Language of the place name (BCP 47, lower case)', schema: { type: string, example: en } }
+      responses:
+        '200':
+          description: A place name for the location field
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data: { $ref: '#/components/schemas/ReverseGeocodeResult' }
+              example: { success: true, data: { location: 'Vilnius, Lithuania', city: Vilnius, country: Lithuania } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404':
+          description: '`PLACE_NOT_FOUND`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '502':
+          description: '`GEOCODING_UNAVAILABLE`: Nominatim failed'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /discovery/{jobId}:
+    get:
+      tags: [Discovery]
+      operationId: getDiscoveryJob
+      summary: State and candidates of a search
+      description: '`new` candidates are checked again against the studio''s current leads.'
+      parameters:
+        - $ref: '#/components/parameters/DiscoveryJobId'
+      responses:
+        '200':
+          description: The job
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data: { $ref: '#/components/schemas/DiscoveryJobStatus' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/DiscoveryJobNotFound' }
+
+  /discovery/{jobId}/import:
+    post:
+      tags: [Discovery]
+      operationId: importDiscoveryCandidates
+      summary: Import the selected candidates as leads
+      description: Candidate data is taken only from the job's result, never from the request; each import queues an audit.
+      parameters:
+        - $ref: '#/components/parameters/DiscoveryJobId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../schemas/requests.yaml#/ImportDiscovery' }
+            example: { externalIds: ['osm:node/2918273645', 'osm:way/48120371'], operatorLocale: en }
+      responses:
+        '200':
+          description: One outcome per selected candidate
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/DiscoveryImportResult' }
+              example:
+                success: true
+                message: Imported 1 of 2 selected businesses
+                data:
+                  imported: 1
+                  results:
+                    - { externalId: 'osm:node/2918273645', outcome: imported, leadId: 6740b0019d4e5a0012ab3700 }
+                    - { externalId: 'osm:way/48120371', outcome: existing_lead, leadId: 6740a1f09d4e5a0012ab35aa }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/DiscoveryJobNotFound' }
+        '409':
+          description: '`DISCOVERY_JOB_NOT_COMPLETED`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /track/open/{token}.gif:
+    get:
+      tags: [Tracking]
+      operationId: trackEmailOpen
+      summary: Email open pixel (lead → OPENED)
+      description: Public. Always answers the 1×1 transparent GIF with no-cache headers; an unknown token moves no lead. Also served at `/track/open/{token}`.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/TrackingToken'
+      responses:
+        '200':
+          description: 43-byte transparent GIF
+          content:
+            image/gif:
+              schema: { type: string, format: binary }
+
+  /track/click/{token}:
+    get:
+      tags: [Tracking]
+      operationId: trackEmailClick
+      summary: Link in the email (lead → CLICKED), redirects to the prototype
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/TrackingToken'
+      responses:
+        '302':
+          description: Redirect to the published prototype
+          headers:
+            Location: { schema: { type: string, format: uri } }
+
+  /track/mvp-event:
+    post:
+      tags: [Tracking]
+      operationId: trackMvpEvent
+      summary: Beacon from the published prototype page
+      description: |
+        Public; sent with `navigator.sendBeacon` by `revamp-tracker.js`. The lead moves to `ENGAGED` on a dwell time of
+        at least 30 s or on a CTA or booking interaction. Allowed origins: the dashboard, the demos storage and `https://{PREVIEW_DOMAIN}`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../schemas/requests.yaml#/MvpTrackEvent' }
+            example: { trackingToken: 3f9c1e0a7b2d4c58a61e0f4b9d2c7a11, eventType: dwell_time, dwellTimeSeconds: 42 }
+      responses:
+        '200':
+          description: Recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, engaged]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  engaged: { type: boolean, description: Whether this event moved the lead to ENGAGED }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /track/unsubscribe/{token}:
+    parameters:
+      - $ref: '#/components/parameters/TrackingToken'
+    get:
+      tags: [Tracking]
+      operationId: showUnsubscribePage
+      summary: Unsubscribe confirmation page (changes nothing)
+      description: Mail scanners open every link in an email, so a GET never unsubscribes (RFC 8058); the page posts back to the same URL.
+      security: []
+      responses:
+        '200':
+          description: HTML confirmation page (or "You are unsubscribed" when already done)
+          content:
+            text/html:
+              schema: { type: string }
+        '404':
+          description: HTML page "Link not recognised"
+          content:
+            text/html:
+              schema: { type: string }
+    post:
+      tags: [Tracking]
+      operationId: unsubscribe
+      summary: One-click unsubscribe (RFC 8058)
+      description: Lead and campaign → `UNSUBSCRIBED`. Idempotent; an unknown token changes nothing.
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                List-Unsubscribe: { type: string, enum: [One-Click] }
+      responses:
+        '200':
+          description: HTML page "You are unsubscribed"
+          content:
+            text/html:
+              schema: { type: string }
+        '404':
+          description: HTML page "Link not recognised"
+          content:
+            text/html:
+              schema: { type: string }
+
+  /track/revamp-tracker.js:
+    get:
+      tags: [Tracking]
+      operationId: getTrackerScript
+      summary: Tracking script loaded by the prototype pages
+      description: '`Cross-Origin-Resource-Policy: cross-origin` so a page served from the storage host can load it; cached for 1 hour.'
+      security: []
+      responses:
+        '200':
+          description: JavaScript
+          content:
+            application/javascript:
+              schema: { type: string }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        HS256 token from `POST /auth/register`, `POST /auth/login`, `POST /invitations/{token}/join` or
+        `POST /invitations/{token}/accept`. Claims: `sub` (user id), `org` (studio id), `role` (ignored: the role is
+        read from the database on every request). Lifetime 7 days; there is no refresh token and no server-side logout.
+
+  parameters:
+    ObjectIdPath:
+      name: id
+      in: path
+      required: true
+      description: 24-character hexadecimal MongoDB ObjectId
+      schema: { $ref: '#/components/schemas/ObjectId' }
+    MvpIdPath:
+      name: id
+      in: path
+      required: true
+      description: The MVP project's `_id`
+      schema: { $ref: '#/components/schemas/ObjectId' }
+    InvitationToken:
+      name: token
+      in: path
+      required: true
+      description: The one-time invitation token from the join link
+      schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,128}$' }
+    DiscoveryJobId:
+      name: jobId
+      in: path
+      required: true
+      description: BullMQ job id returned by `POST /discovery`
+      schema: { type: string }
+    TrackingToken:
+      name: token
+      in: path
+      required: true
+      description: The campaign's tracking token (32 hexadecimal characters)
+      schema: { type: string }
+
+  responses:
+    Ok:
+      description: Done
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success]
+            properties:
+              success: { type: boolean, enum: [true] }
+    ValidationError:
+      description: '`VALIDATION_ERROR` (Zod: `message` is the first issue, `details.issues` all of them), `INVALID_JSON`, or `INVALID_ID`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            success: false
+            error:
+              code: VALIDATION_ERROR
+              message: 'password: String must contain at least 10 character(s)'
+              details: { issues: [{ code: too_small, minimum: 10, type: string, inclusive: true, message: String must contain at least 10 character(s), path: [password] }] }
+    InvalidId:
+      description: '`INVALID_ID`: not a 24-character hexadecimal ObjectId'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { success: false, error: { code: INVALID_ID, message: A valid 24-character hexadecimal ObjectId is required } }
+    Unauthenticated:
+      description: '`UNAUTHENTICATED`: no bearer token, a wrong or expired token, or the membership no longer exists'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { success: false, error: { code: UNAUTHENTICATED, message: Sign in to use the API } }
+    Forbidden:
+      description: '`FORBIDDEN`: a viewer tried to change data, or a non-owner called `/organization/*`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { success: false, error: { code: FORBIDDEN, message: Your role can read but not change data } }
+    LeadNotFound:
+      description: '`LEAD_NOT_FOUND` (also for a lead of another studio)'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { success: false, error: { code: LEAD_NOT_FOUND, message: Lead not found } }
+    MvpNotFound:
+      description: '`MVP_NOT_FOUND`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    MvpOrLeadNotFound:
+      description: '`MVP_NOT_FOUND` or `LEAD_NOT_FOUND`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    MvpNotChangeable:
+      description: |
+        `MVP_PREVIOUS_GENERATOR` (made by the previous generator: only a regeneration applies) or `MVP_EDIT_NOT_ALLOWED`
+        (the lead is not in `NEEDS_APPROVAL`; `details.status`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    MvpEditFailed:
+      description: |
+        `MVP_EDIT_FAILED`: nothing was published. `details.reason` is `not_configured`, `call_failed` or `invalid_page`;
+        `details.problems` lists failed page checks.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            success: false
+            error:
+              code: MVP_EDIT_FAILED
+              message: 'The change was not applied: the page writes a phone number instead of {{phone}}'
+              details: { reason: invalid_page, problems: [{ code: 'page:contact', message: 'the page writes a phone number instead of {{phone}}' }] }
+    MvpEditTimeout:
+      description: '`MVP_EDIT_TIMEOUT`: the worker did not finish in time; `message` says whether the change may still be published'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    MvpPageResult:
+      description: The result of the change and the MVP as saved after it
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, data]
+            properties:
+              success: { type: boolean, enum: [true] }
+              message: { type: string }
+              data:
+                type: object
+                required: [applied, mvp]
+                properties:
+                  applied: { type: boolean }
+                  version: { type: integer, description: 'The version published (absent for colors and fonts)' }
+                  reason: { type: string, enum: [unchanged] }
+                  mvp: { $ref: '#/components/schemas/MvpProject' }
+          example:
+            success: true
+            message: Change applied; the published MVP was re-published
+            data: { applied: true, version: 3, mvp: { _id: 6740a5119d4e5a0012ab35e1, leadId: 6740a1f09d4e5a0012ab35aa, previewSlug: smile-dental-k3v9, fullPreviewUrl: 'http://localhost:9000/revamp-demos/v/smile-dental-k3v9/index.html' } }
+    AuditQueueUnavailable:
+      description: '`AUDIT_QUEUE_UNAVAILABLE`: the lead was saved but its audit was not queued within 5 s; the lead is `AUDIT_FAILED`; `details.leadId`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    InvitationNotFound:
+      description: '`INVITATION_NOT_FOUND`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    InvitationExpired:
+      description: '`INVITATION_EXPIRED`: expired, already used or revoked'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    InvitationEmailMismatch:
+      description: '`INVITATION_EMAIL_MISMATCH`: the invitation is for another address'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    MemberNotFound:
+      description: '`MEMBER_NOT_FOUND`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    LastOwner:
+      description: '`LAST_OWNER`: the studio would be left without an owner'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    DiscoveryJobNotFound:
+      description: '`DISCOVERY_JOB_NOT_FOUND` (also for a job of another studio)'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  schemas:
+    ObjectId:
+      type: string
+      pattern: '^[0-9a-fA-F]{24}$'
+      example: 6740a1f09d4e5a0012ab35aa
+    ApiErrorCode:
+      type: string
+      description: '`API_ERROR_CODES` in `@revamp/shared-types`; meaning and recovery of each in `guides/errors.md`'
+      enum:
+        - VALIDATION_ERROR
+        - INVALID_ID
+        - INVALID_JSON
+        - PAYLOAD_TOO_LARGE
+        - DUPLICATE
+        - NOT_FOUND
+        - INTERNAL
+        - INVALID_URL
+        - LEAD_NOT_FOUND
+        - LEAD_NOT_AUDITABLE
+        - AUDIT_NOT_FOUND
+        - AUDIT_QUEUE_UNAVAILABLE
+        - EMAIL_QUEUE_UNAVAILABLE
+        - LLM_PROVIDER_NOT_ALLOWED
+        - NO_COMPLETED_AUDIT
+        - MVP_GENERATION_NOT_ALLOWED
+        - MVP_ALREADY_GENERATED
+        - MVP_NOT_FOUND
+        - MVP_EDIT_NOT_ALLOWED
+        - MVP_EDIT_FAILED
+        - MVP_EDIT_TIMEOUT
+        - MVP_PREVIOUS_GENERATOR
+        - MVP_VERSION_NOT_FOUND
+        - MVP_VERSION_UNUSABLE
+        - PREVIEW_NOT_FOUND
+        - LEAD_NOT_AWAITING_APPROVAL
+        - LEAD_NOT_REJECTABLE
+        - NO_CONTACT_EMAIL
+        - EMAIL_PROVIDER_NOT_CONFIGURED
+        - EMAIL_TEST_TIMEOUT
+        - EMAIL_SEND_FAILED
+        - DISCOVERY_JOB_NOT_FOUND
+        - DISCOVERY_JOB_NOT_COMPLETED
+        - GEOCODING_UNAVAILABLE
+        - PLACE_NOT_FOUND
+        - UNAUTHENTICATED
+        - INVALID_CREDENTIALS
+        - EMAIL_TAKEN
+        - FORBIDDEN
+        - ALREADY_MEMBER
+        - LAST_OWNER
+        - MEMBER_NOT_FOUND
+        - INVITATION_NOT_FOUND
+        - INVITATION_EXPIRED
+        - INVITATION_EMAIL_MISMATCH
+        - LEAD_ALREADY_EXISTS
+    ErrorResponse:
+      type: object
+      required: [success, error]
+      properties:
+        success: { type: boolean, enum: [false] }
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { $ref: '#/components/schemas/ApiErrorCode' }
+            message: { type: string, description: Readable text for the operator; never parse it }
+            details:
+              description: Machine-readable context, e.g. `{ status }`, `{ leadId }`, `{ issues }` or `{ reason, problems }`
+              type: object
+              additionalProperties: true
+
+    Health:
+      type: object
+      required: [status, timestamp, services]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        timestamp: { type: string, format: date-time }
+        services:
+          type: object
+          properties:
+            api: { type: string, enum: [healthy] }
+            mongodb: { type: string, enum: [connected, connecting, disconnected] }
+            redis: { type: string, description: '`connected`, or the ioredis status (`reconnecting`, `end`, …)' }
+
+    Role:
+      type: string
+      enum: [owner, operator, viewer]
+    AuthContext:
+      type: object
+      required: [user, organization, role]
+      properties:
+        user:
+          type: object
+          required: [id, email]
+          properties:
+            id: { $ref: '#/components/schemas/ObjectId' }
+            email: { type: string, format: email }
+            name: { type: string }
+        organization:
+          type: object
+          required: [id, name]
+          properties:
+            id: { $ref: '#/components/schemas/ObjectId' }
+            name: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+    AuthSession:
+      allOf:
+        - $ref: '#/components/schemas/AuthContext'
+        - type: object
+          required: [token]
+          properties:
+            token: { type: string, description: 'The bearer token (JWT, 7 days)' }
+    AuthSessionEnvelope:
+      type: object
+      required: [success, data]
+      properties:
+        success: { type: boolean, enum: [true] }
+        data: { $ref: '#/components/schemas/AuthSession' }
+    Invitation:
+      type: object
+      required: [id, email, role, expiresAt, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/ObjectId' }
+        email: { type: string, format: email }
+        role: { $ref: '#/components/schemas/Role' }
+        expiresAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+    CreatedInvitation:
+      type: object
+      required: [invitation, token]
+      properties:
+        invitation: { $ref: '#/components/schemas/Invitation' }
+        token: { type: string, description: Shown once; build the link `/invite/<token>` }
+    InvitationPreview:
+      type: object
+      required: [organizationName, email, role, expiresAt]
+      properties:
+        organizationName: { type: string }
+        email: { type: string, format: email }
+        role: { $ref: '#/components/schemas/Role' }
+        expiresAt: { type: string, format: date-time }
+    OrganizationMembers:
+      type: object
+      required: [members, invitations]
+      properties:
+        members:
+          type: array
+          items:
+            type: object
+            required: [userId, email, role, joinedAt]
+            properties:
+              userId: { $ref: '#/components/schemas/ObjectId' }
+              email: { type: string, format: email }
+              name: { type: string }
+              role: { $ref: '#/components/schemas/Role' }
+              joinedAt: { type: string, format: date-time }
+        invitations:
+          type: array
+          items: { $ref: '#/components/schemas/Invitation' }
+
+    LeadStatus:
+      type: string
+      description: 'Lead lifecycle; allowed moves are `LEAD_TRANSITIONS` in `@revamp/validation` (see `guides/concepts.md`)'
+      enum: [QUEUED, AUDITING, AUDIT_FAILED, AUDITED, GENERATING, NEEDS_APPROVAL, SCHEDULED, SENT, OPENED, CLICKED, ENGAGED, REJECTED, UNSUBSCRIBED]
+    Niche:
+      type: string
+      enum: [dental, auto, legal, beauty, construction, medical, restaurant, fitness, real_estate, other]
+    Lead:
+      type: object
+      description: '`ILead` in `@revamp/shared-types`; dates are ISO strings'
+      required: [_id, businessName, originalUrl, domain, niche, status, tags, createdAt, updatedAt]
+      properties:
+        _id: { $ref: '#/components/schemas/ObjectId' }
+        tenantId: { $ref: '#/components/schemas/ObjectId' }
+        businessId: { $ref: '#/components/schemas/ObjectId' }
+        businessName: { type: string }
+        originalUrl: { type: string, format: uri }
+        domain: { type: string }
+        niche: { $ref: '#/components/schemas/Niche' }
+        city: { type: string }
+        contactEmail: { type: string, format: email, description: Absent until entered or found on the site; never invented }
+        contactPhone: { type: string }
+        phoneE164: { type: string }
+        source: { type: string, enum: [manual, osm, google] }
+        externalId: { type: string, example: 'osm:node/2918273645' }
+        operatorLocale: { type: string, enum: [en, ru, be, pl, lt] }
+        ownerName: { type: string }
+        status: { $ref: '#/components/schemas/LeadStatus' }
+        totalScore: { type: number, minimum: 0, maximum: 100 }
+        tags: { type: array, items: { type: string } }
+        previewUrl: { type: string, format: uri }
+        comparisonBannerUrl: { type: string, format: uri }
+        mvpGeneratedAt: { type: string, format: date-time }
+        generationError: { type: string }
+        generationFailure:
+          type: object
+          description: Why the model gave no page
+          properties:
+            code: { type: string }
+            reason: { type: string, enum: [not_configured, call_failed, invalid_page] }
+            message: { type: string }
+            at: { type: string, format: date-time }
+        auditError: { type: string }
+        siteComplexity: { type: string, enum: [ONE_PAGE_BROCHURE, SMALL_MULTI_PAGE, COMPLEX, UNKNOWN] }
+        onePageBrochure: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    LeadListItem:
+      allOf:
+        - $ref: '#/components/schemas/Lead'
+        - type: object
+          properties:
+            completeness: { $ref: '#/components/schemas/MvpCompletenessSummary' }
+    LeadStats:
+      type: object
+      required: [total, byStatus]
+      properties:
+        total: { type: integer }
+        byStatus:
+          type: object
+          description: Count per status; statuses with no lead are absent
+          additionalProperties: { type: integer }
+    Pagination:
+      type: object
+      required: [total, page, limit, totalPages]
+      properties:
+        total: { type: integer, description: Leads matching the filters }
+        page: { type: integer }
+        limit: { type: integer }
+        totalPages: { type: integer }
+
+    Audit:
+      type: object
+      description: |
+        `IAudit` in `@revamp/shared-types`. Every number is measured by code (Playwright, axe-core, in-page web vitals);
+        a measurement that failed is **absent** and listed in `measurementErrors`, never replaced by a stand-in value.
+        Nested objects are summarised here; their full shape is in `database-expertise.md` §4.2.
+      required: [_id, leadId, status, createdAt]
+      properties:
+        _id: { $ref: '#/components/schemas/ObjectId' }
+        leadId: { $ref: '#/components/schemas/ObjectId' }
+        businessId: { $ref: '#/components/schemas/ObjectId' }
+        status: { type: string, enum: [QUEUED, PROCESSING, COMPLETED, FAILED] }
+        scores:
+          type: object
+          description: Pillar scores 0–100; `total` is weighted over the pillars that were measured
+          properties:
+            total: { type: number }
+            performance: { type: number }
+            accessibility: { type: number }
+            standards: { type: number }
+            design: { type: number, description: Absent when the design critique is the templated fallback }
+          required: [total]
+        webVitals:
+          type: object
+          properties:
+            lcp: { type: number, description: 'Largest Contentful Paint, ms (buffered PerformanceObserver, no Lighthouse)' }
+            cls: { type: number, description: Cumulative Layout Shift }
+        standardsChecks: { type: object, additionalProperties: true, description: 'HTTPS, viewport, meta description, single H1, …' }
+        a11ySummary: { type: object, additionalProperties: true }
+        axeViolations: { type: array, items: { type: object, additionalProperties: true } }
+        measurementErrors:
+          type: array
+          items:
+            type: object
+            properties:
+              measurement: { type: string, enum: [performance, accessibility, standards, design] }
+              message: { type: string }
+        designCritique: { type: object, additionalProperties: true, description: 'Vision model''s critique (validated by `DesignCritiqueOutputSchema`)' }
+        extractedBrandTokens: { type: object, additionalProperties: true }
+        extractedContacts: { type: object, additionalProperties: true, description: 'Phones, emails, address found in the DOM by code' }
+        extractedContent: { type: object, additionalProperties: true }
+        extractedServices: { type: array, items: { type: string } }
+        siteComplexity: { type: object, additionalProperties: true }
+        siteEra: { type: object, additionalProperties: true }
+        screenshotUrls:
+          type: object
+          properties:
+            desktopOriginal: { type: string, format: uri }
+            mobileOriginal: { type: string, format: uri }
+            desktopFull: { type: string, format: uri }
+            mobileFull: { type: string, format: uri }
+            comparisonBanner: { type: string, format: uri }
+        errorMessage: { type: string }
+        createdAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
+
+    MvpCompletenessSummary:
+      type: object
+      required: [status, hasCriticalIssues, criticalIssues]
+      properties:
+        status: { type: string, enum: [verified, unverified] }
+        score: { type: number, minimum: 0, maximum: 100 }
+        hasCriticalIssues: { type: boolean }
+        criticalIssues: { type: array, items: { type: string } }
+    MvpPageVersion:
+      type: object
+      required: ['n', kind, storagePath, createdAt]
+      properties:
+        'n': { type: integer, minimum: 1 }
+        kind: { type: string, enum: [generate, change, restore] }
+        instruction: { type: string }
+        from: { type: integer }
+        provider: { type: string }
+        model: { type: string }
+        storagePath: { type: string, example: v/smile-dental-k3v9/versions/2.html }
+        changes:
+          type: array
+          items:
+            type: object
+            properties:
+              change: { type: string }
+              reason: { type: string }
+        createdAt: { type: string, format: date-time }
+    MvpProject:
+      type: object
+      description: '`IMvpProject` in `@revamp/shared-types`'
+      required: [_id, leadId, previewSlug, fullPreviewUrl]
+      properties:
+        _id: { $ref: '#/components/schemas/ObjectId' }
+        tenantId: { $ref: '#/components/schemas/ObjectId' }
+        leadId: { $ref: '#/components/schemas/ObjectId' }
+        auditId: { $ref: '#/components/schemas/ObjectId' }
+        previewSlug: { type: string }
+        fullPreviewUrl: { type: string, format: uri }
+        storageHtmlPath: { type: string }
+        isPublished: { type: boolean }
+        generatedAt: { type: string, format: date-time }
+        generationCount: { type: integer }
+        provider: { type: string, enum: [anthropic, openai, gemini, claude-cli, deterministic] }
+        modelUsed: { type: string }
+        completenessReport: { type: object, additionalProperties: true }
+        standards: { type: object, additionalProperties: true }
+        performance: { type: object, additionalProperties: true }
+        page: { type: string, description: 'The model''s raw page with `{{placeholders}}` unfilled' }
+        theme: { type: object, additionalProperties: { type: string } }
+        controls: { type: object, additionalProperties: { type: string } }
+        grounding:
+          type: array
+          description: Facts on the page the original site does not support, for the operator to check
+          items: { type: object, additionalProperties: true }
+        versions:
+          type: array
+          items: { $ref: '#/components/schemas/MvpPageVersion' }
+        editedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    LlmProvidersResponse:
+      type: object
+      required: [workersOnline, providers]
+      properties:
+        defaultProvider: { type: string, enum: [anthropic, openai, gemini, claude-cli] }
+        defaultModel: { type: string }
+        workersOnline: { type: boolean }
+        providers:
+          type: array
+          items:
+            type: object
+            required: [id, label, local, devOnly, models, defaultModel, available]
+            properties:
+              id: { type: string, enum: [anthropic, openai, gemini, claude-cli] }
+              label: { type: string }
+              local: { type: boolean }
+              devOnly: { type: boolean }
+              models:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string }
+                    label: { type: string }
+              defaultModel: { type: string }
+              available: { type: boolean }
+              reason: { type: string, enum: [missing_api_key, cli_not_found, dev_only, workers_offline] }
+
+    ApprovalResult:
+      type: object
+      required: [campaignId, leadId, status, delayMs]
+      properties:
+        campaignId: { $ref: '#/components/schemas/ObjectId' }
+        leadId: { $ref: '#/components/schemas/ObjectId' }
+        jobId: { type: string }
+        status: { type: string, enum: [SCHEDULED] }
+        delayMs: { type: integer, description: 'Random dispatch delay, 15 000–45 000 ms' }
+        approvedBy: { type: string }
+        approvedAt: { type: string, format: date-time }
+        subject: { type: string }
+        preheader: { type: string }
+
+    DiscoveryCandidate:
+      type: object
+      required: [provider, externalId, name, status]
+      properties:
+        provider: { type: string, enum: [osm, google] }
+        externalId: { type: string }
+        name: { type: string }
+        status: { type: string, enum: [new, existing_lead, duplicate, no_website, invalid] }
+        website: { type: string, format: uri }
+        domain: { type: string }
+        phone: { type: string }
+        email: { type: string }
+        address: { type: string }
+        city: { type: string }
+        leadId: { $ref: '#/components/schemas/ObjectId' }
+        assessment: { type: object, additionalProperties: true, description: 'Pre-assessment of the site (verdict and signs)' }
+    DiscoveryJobStatus:
+      type: object
+      required: [jobId, state, params, result, error, attemptsMade, createdAt, finishedAt]
+      properties:
+        jobId: { type: string }
+        state: { type: string, enum: [waiting, waiting-children, delayed, prioritized, active, completed, failed, unknown] }
+        params: { type: object, additionalProperties: true, description: The search as it was queued }
+        result:
+          type: object
+          nullable: true
+          required: [found, candidates]
+          properties:
+            found: { type: integer }
+            candidates:
+              type: array
+              items: { $ref: '#/components/schemas/DiscoveryCandidate' }
+            counts: { type: object, additionalProperties: { type: integer } }
+            requests: { type: integer }
+            exhausted: { type: boolean }
+            skippedChecked: { type: integer }
+        error: { type: string, nullable: true }
+        attemptsMade: { type: integer }
+        createdAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time, nullable: true }
+    DiscoveryImportResult:
+      type: object
+      required: [imported, results]
+      properties:
+        imported: { type: integer }
+        results:
+          type: array
+          items:
+            type: object
+            required: [externalId, outcome]
+            properties:
+              externalId: { type: string }
+              outcome: { type: string, enum: [imported, existing_lead, not_importable, not_found, failed] }
+              leadId: { $ref: '#/components/schemas/ObjectId' }
+    ReverseGeocodeResult:
+      type: object
+      required: [location]
+      properties:
+        location: { type: string }
+        city: { type: string }
+        country: { type: string }

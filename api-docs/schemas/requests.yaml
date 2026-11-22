@@ -1,0 +1,433 @@
+# Generated from the Zod schemas of @revamp/validation by tools/generate-request-schemas.mjs; do not edit by hand
+Register:
+  type: object
+  properties:
+    email:
+      type: string
+      format: email
+      maxLength: 254
+    password:
+      type: string
+      minLength: 10
+      maxLength: 128
+    organizationName:
+      type: string
+      minLength: 1
+      maxLength: 100
+    name:
+      type: string
+      minLength: 1
+      maxLength: 100
+    invitationToken:
+      type: string
+      pattern: ^[A-Za-z0-9_-]{1,128}$
+  required:
+    - email
+    - password
+Login:
+  type: object
+  properties:
+    email:
+      type: string
+      format: email
+      maxLength: 254
+    password:
+      type: string
+      minLength: 1
+      maxLength: 128
+  required:
+    - email
+    - password
+CreateInvitation:
+  type: object
+  properties:
+    email:
+      type: string
+      format: email
+      maxLength: 254
+    role:
+      type: string
+      enum:
+        - owner
+        - operator
+        - viewer
+  required:
+    - email
+    - role
+JoinInvitation:
+  type: object
+  properties:
+    password:
+      type: string
+      minLength: 1
+      maxLength: 128
+  required:
+    - password
+ChangeMemberRole:
+  type: object
+  properties:
+    role:
+      type: string
+      enum:
+        - owner
+        - operator
+        - viewer
+  required:
+    - role
+CreateLead:
+  type: object
+  properties:
+    businessName:
+      type: string
+      minLength: 2
+      maxLength: 100
+    originalUrl:
+      type: string
+      format: uri
+    contactEmail:
+      type: string
+      format: email
+    niche:
+      type: string
+      enum:
+        - dental
+        - auto
+        - legal
+        - beauty
+        - construction
+        - medical
+        - restaurant
+        - fitness
+        - real_estate
+        - other
+      default: other
+    city:
+      type: string
+      maxLength: 100
+    contactPhone:
+      type: string
+      maxLength: 30
+    ownerName:
+      type: string
+      maxLength: 100
+    operatorLocale:
+      type: string
+      enum:
+        - en
+        - ru
+        - be
+        - pl
+        - lt
+  required:
+    - businessName
+    - originalUrl
+GetLeadsQuery:
+  type: object
+  properties:
+    page:
+      type: integer
+      minimum: 1
+    limit:
+      type: integer
+      minimum: 1
+      maximum: 100
+    status:
+      type: string
+      maxLength: 40
+    niche:
+      type: string
+      maxLength: 40
+    search:
+      type: string
+      maxLength: 100
+    complexity:
+      type: string
+      enum:
+        - ONE_PAGE_BROCHURE
+        - SMALL_MULTI_PAGE
+        - COMPLEX
+        - UNKNOWN
+TriggerAudit:
+  type: object
+  properties:
+    leadId:
+      type: string
+      minLength: 1
+    force:
+      type: boolean
+      default: false
+  required:
+    - leadId
+GenerateMvp:
+  type: object
+  properties:
+    auditId:
+      type: string
+      minLength: 1
+    leadId:
+      type: string
+      minLength: 1
+    forceRegenerate:
+      type: boolean
+      default: false
+    provider:
+      type: string
+      enum:
+        - anthropic
+        - openai
+        - gemini
+        - claude-cli
+    model:
+      type: string
+      minLength: 1
+      maxLength: 100
+    operatorLocale:
+      type: string
+      enum:
+        - en
+        - ru
+        - be
+        - pl
+        - lt
+  required:
+    - auditId
+EditMvp:
+  type: object
+  properties:
+    instruction:
+      type: string
+      minLength: 3
+      maxLength: 500
+    operatorLocale:
+      type: string
+      enum:
+        - en
+        - ru
+        - be
+        - pl
+        - lt
+  required:
+    - instruction
+UpdateMvpTokens:
+  type: object
+  properties:
+    colors:
+      type: object
+      properties:
+        primary:
+          type: string
+          pattern: ^#[0-9a-f]{6}$
+        accent:
+          type: string
+          pattern: ^#[0-9a-f]{6}$
+        bg:
+          type: string
+          pattern: ^#[0-9a-f]{6}$
+        surface:
+          type: string
+          pattern: ^#[0-9a-f]{6}$
+        text:
+          type: string
+          pattern: ^#[0-9a-f]{6}$
+      required:
+        - primary
+        - accent
+        - bg
+        - surface
+        - text
+      additionalProperties: false
+      nullable: true
+    fonts:
+      type: object
+      properties:
+        heading:
+          type: string
+        body:
+          type: string
+      required:
+        - heading
+        - body
+      additionalProperties: false
+      nullable: true
+  additionalProperties: false
+MvpVersionParams:
+  type: object
+  properties:
+    'n':
+      type: integer
+      minimum: 1
+  required:
+    - 'n'
+ApproveOutreach:
+  type: object
+  properties:
+    scheduleTime:
+      type: string
+      format: date-time
+    approvedBy:
+      type: string
+      default: operator
+    subject:
+      type: string
+      minLength: 1
+      maxLength: 300
+    preheader:
+      type: string
+      maxLength: 300
+    body:
+      type: string
+      minLength: 1
+      maxLength: 20000
+  required:
+    - subject
+    - body
+RejectOutreach:
+  type: object
+  properties:
+    reason:
+      type: string
+      minLength: 3
+      maxLength: 200
+  required:
+    - reason
+TestEmailOutreach:
+  type: object
+  properties:
+    testEmail:
+      type: string
+      format: email
+    subject:
+      type: string
+      minLength: 1
+      maxLength: 300
+    preheader:
+      type: string
+      maxLength: 300
+    body:
+      type: string
+      minLength: 1
+      maxLength: 20000
+  required:
+    - testEmail
+    - subject
+    - body
+StartDiscovery:
+  type: object
+  properties:
+    provider:
+      type: string
+      enum:
+        - osm
+        - google
+      default: osm
+    niche:
+      type: string
+      enum:
+        - dental
+        - auto
+        - legal
+        - beauty
+        - construction
+        - medical
+        - restaurant
+        - fitness
+        - real_estate
+        - other
+      default: other
+    location:
+      type: string
+      minLength: 2
+      maxLength: 100
+    keyword:
+      type: string
+      minLength: 2
+      maxLength: 100
+    limit:
+      type: integer
+      minimum: 1
+      maximum: 100
+      default: 20
+    excludeDomains:
+      type: array
+      items:
+        type: string
+        minLength: 3
+        maxLength: 253
+        pattern: ^[a-z0-9.-]+\.[a-z0-9-]+$
+      maxItems: 1000
+  required:
+    - location
+ImportDiscovery:
+  type: object
+  properties:
+    externalIds:
+      type: array
+      items:
+        type: string
+        minLength: 1
+        maxLength: 200
+      minItems: 1
+      maxItems: 100
+    operatorLocale:
+      type: string
+      enum:
+        - en
+        - ru
+        - be
+        - pl
+        - lt
+  required:
+    - externalIds
+ReverseGeocodeQuery:
+  type: object
+  properties:
+    lat:
+      type: number
+      minimum: -90
+      maximum: 90
+    lng:
+      type: number
+      minimum: -180
+      maximum: 180
+    lang:
+      type: string
+      pattern: ^[a-z]{2,3}(-[a-z0-9]{1,8})*$
+  required:
+    - lat
+    - lng
+MvpTrackEvent:
+  type: object
+  properties:
+    token:
+      type: string
+      minLength: 1
+    trackingToken:
+      type: string
+      minLength: 1
+    mvpProjectId:
+      type: string
+    leadId:
+      type: string
+    eventType:
+      type: string
+      enum:
+        - open
+        - click
+        - pageview
+        - dwell_time
+        - cta_click
+        - booking_intent
+        - scroll_depth
+        - token_usage
+    dwellTimeSeconds:
+      type: number
+      minimum: 0
+    scrollDepthPercent:
+      type: number
+      minimum: 0
+      maximum: 100
+    metadata:
+      type: object
+      additionalProperties: {}
+  required:
+    - eventType

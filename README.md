@@ -159,6 +159,8 @@ flowchart LR
 * 🔬 [**`research.md`**](./research.md) — Архитектурные исследования, ключевые решения (ADR), пользовательские сценарии (CJM) и конкурентный анализ.
 * ⏱️ [**`milestones.md`**](./milestones.md) — 4-недельная ускоренная дорожная карта с детализацией по дням, а также развитие после релиза (`REV-21` — `REV-41`) со статусами.
 * 🤖 [**`AGENTS.md`**](./AGENTS.md) — Руководство и системные промпты для автономных ИИ-агентов платформы и ИИ-разработчика.
+* 🔌 [**`api-docs/`**](./api-docs/README.md) — Документация REST API для разработчиков (на английском): OpenAPI 3.0.3 (`reference/openapi.yaml`, статический сайт `reference/index.html`), схемы запросов из Zod, руководства (старт, аутентификация, концепции, ошибки, туториал), примеры и changelog.
+* 🧾 Материалы экспертной оценки критериев: [**`database-expertise.md`**](./database-expertise.md) (Database), [**`api-documentation-expertise.md`**](./api-documentation-expertise.md) (API Documentation), [**`frontend-expertise.md`**](./frontend-expertise.md) (Front-end).
 * 🗂️ [**`INDEX.md`**](./INDEX.md) — Указатель разделов больших документов (заголовок → диапазон строк), чтобы агенты читали один раздел, а не весь файл (REV-205). Генерируется `npm run docs:index` в Revamp-dev; после правок документов перегенерируйте и закоммитьте его.
 
 ---

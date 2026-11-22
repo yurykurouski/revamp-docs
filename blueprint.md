@@ -935,6 +935,8 @@ interface IInvitation {                      // REV-207
 
 ## 5. Спецификация REST API (Express.js)
 
+Полная спецификация для разработчиков — OpenAPI 3.0.3 в [`api-docs/reference/openapi.yaml`](api-docs/reference/openapi.yaml) с руководствами в [`api-docs/`](api-docs/README.md); при изменении API обновляются оба места.
+
 Базовый путь: `/api/v1`. Тела запросов и query-параметры валидируются Zod-схемами из `@revamp/validation` (`validateBody` / `validateQuery`). Ответы: `{ success: true, data }` или `{ success: false, error: { code, message, details? } }`. Эндпоинты с пометкой *(план)* описаны в первоначальном дизайне, но еще не реализованы.
 
 **Формат ошибок (REV-63).** Все ошибки API имеют один формат: `{ success: false, error: { code, message, details? } }` (`IApiErrorResponse` из `@revamp/shared-types`). `code` — машиночитаемый код из `API_ERROR_CODES`, по нему клиент выбирает поведение; `message` — текст для оператора; `details` — необязательный контекст (например, `{ status }` лида или список ошибок Zod). Маршруты и сервисы не пишут JSON ошибок сами, а бросают `AppError(statusCode, code, message, details?)`; ответ формирует только `errorHandler`. Дашборд читает только `error.code` / `error.message` и бросает `ApiError` (`message`, `status`, `code`, `details`).

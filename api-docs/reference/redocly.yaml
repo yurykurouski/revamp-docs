@@ -1,0 +1,13 @@
+# Lint rules for openapi.yaml: `npx @redocly/cli@1 lint` (run from this folder)
+extends:
+  - recommended
+rules:
+  # The only server is the local development stack; there is no production deployment yet
+  no-server-example.com: off
+  # `/mvp/preview/{slug}` has a literal `preview` segment and is declared before `/mvp/{id}/…` in Express, so the
+  # routes do not overlap in practice
+  no-ambiguous-paths: off
+  # The open pixel, the tracker script and the health check never answer 4xx; the preview and the click link answer
+  # with a 302 redirect instead of a 2xx
+  operation-4xx-response: off
+  operation-2xx-response: off
