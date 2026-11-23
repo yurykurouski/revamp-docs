@@ -59,13 +59,13 @@
 | Лимиты ресурсов | Есть в `docker-compose.full.yml` (REV-218): api 512 MB/1 CPU, workers 2 GB/2, dashboard 128 MB/0.5, mongo 1 GB/1, minio 512 MB/0.5, redis 256 MB/0.5; в prod-файле — только workers |
 | Graceful shutdown | **Есть:** API (`apps/api/src/shutdown.ts`, лимит 8 с под 10 с Docker, закрывает сервер, очереди, Redis, MongoDB, тесты) и workers (`SIGINT`/`SIGTERM`) |
 | Автоперезапуск | Есть: `restart: always` / `unless-stopped` |
-| JSON-логи | Нет: `console.*`; зато логи пишутся в stdout и ротируются драйвером `json-file` (20 MB × 5) |
+| JSON-логи | Есть (REV-220): `configureLogging` (`packages/db/src/observability`) превращает каждый `console.*` в одну JSON-строку (`time`, `level`, `service`, `component`, `msg`) в production или при `LOG_FORMAT=json`; API пишет по строке на запрос с `requestId` (заголовок `X-Request-Id` принимается и возвращается), `route`, `status`, `durationMs`, без query-строки; stdout/stderr, ротация `json-file` |
 | Alpine/distroless | Частично: api и dashboard на Alpine, workers нужен glibc и Chromium |
-| Кастомный базовый образ, условное кэширование, очистка старых образов | Нет (кэш слоёв по порядку `COPY` есть, но не описан) |
-| Compose для dev/test/prod, override | Частично: dev-файл и prod-файл есть, override нет |
-| Secrets (Docker secrets / vault) | Нет: `env_file` |
+| Кастомный базовый образ, условное кэширование, очистка старых образов | Частично (REV-220): BuildKit cache mount для `npm ci` во всех Dockerfile (изменённый lockfile перекачивает только изменённые пакеты), порядок `COPY` описан в README, `npm run docker:prune`, `deploy.sh` чистит образы старше суток. Общего кастомного базового образа нет: у приложений разные базы |
+| Compose для dev/test/prod, override | Есть, кроме test (REV-220): `docker-compose.yml` (инфраструктура для `npm run dev`), `docker-compose.full.yml` (вся система), `docker-compose.debug.yml` (override), `docker-compose.prod.yml`. Отдельного test-файла нет: автотесты не требуют контейнеров |
+| Secrets (Docker secrets / vault) | Есть (REV-220): переменные `NAME_FILE` читают секрет из файла (`loadFileSecrets`); полный стек монтирует `jwt_secret`, `mongodb_uri`, `s3_secret_key` из `.stack-secrets/`, пароли сервисов данных в контейнерах приложений обнулены; production — пять секретов через `deploy/prepare-secrets.sh` и env-файл без них. Проверено: `docker inspect` api и workers не содержит ни JWT-секрета, ни пароля MongoDB, ни S3-секрета. Не проверено на реальном сервере (REV-211) |
 | Network policies | Частично: prod-сеть изолирована, `expose` вместо `ports` для api и dashboard |
-| Prometheus, централизованные логи, debug-режим | Нет → REV-220 |
+| Prometheus, debug-режим | Есть (REV-220): `GET /metrics` у API и workers (HTTP, очереди BullMQ, задачи, процесс, event loop), опциональный профиль `monitoring` с Prometheus (обе цели `up`); `docker-compose.debug.yml` и `npm run stack:up -- --debug` открывают инспектор Node на 127.0.0.1:9229/9230 (проверено). **Нет:** Grafana и централизованного хранилища логов |
 
 ## 5. Известные риски
 
@@ -73,6 +73,7 @@
 * В полном стеке ссылки предпросмотра MVP используют адрес MinIO внутри сети (`http://minio:9000`) и недоступны из браузера без публичного `S3_ENDPOINT`.
 * В prod-файле нет Mongo/Redis/MinIO: управляемые сервисы (Atlas, Upstash, R2) — осознанный выбор, но на защите нужно показать и полный локальный стек.
 * `OPERATOR_NOTIFY_EMAIL` и `TRACKING_BASE_URL` есть в шаблонах окружения, но код их не читает (отмечено в таблице README).
+* Не сделано из максимального уровня: Grafana, централизованное хранилище логов, общий кастомный базовый образ, отдельный test-compose. Ошибка авторизации до сопоставления маршрута попадает в метрики с `route="unmatched"` (метка ограничена по построению).
 * Продакшен-сервера нет (REV-211): деплой собирает образы, но SSH-шаг пропускается.
 
 ## 6. План закрытия
@@ -82,9 +83,11 @@
 | REV-217 (сделано, PR #138) | `.dockerignore`, non-root, workers < 1 GB, healthcheck workers, закреплённые версии | убирает нарушения минимума (критично) |
 | REV-218 (сделано, PR #139) | один `npm run stack:up`, сети, секреты из `.env`, лимиты | убирает нарушение минимума |
 | REV-219 (сделано, PR #140) | README: образы, ENV, диаграмма, ресурсы, метрики | закрывает пункт документации минимума |
-| REV-220 | JSON-логи, `/metrics`, override-файлы, Docker secrets, debug | путь к 8–10 |
+| REV-220 (сделано, PR #141) | JSON-логи, `/metrics`, override-файлы, Docker secrets, debug | путь к 8–10 |
 
 ## 7. Метрики для защиты
+
+Наблюдаемость (REV-220, измерено 23.11.2026): стек с профилем `monitoring` — API и workers отдают метрики, Prometheus видит обе цели `up`; запрос с `X-Request-Id: trace-abc-1` возвращает тот же заголовок и пишет JSON-строку `request`; инспектор отвечает на 9229 и 9230.
 
 Полный стек (`npm run stack:up`, измерено 22.11.2026): первый запуск с тремя сборками образов при тёплом кэше слоёв — 123 с; запуск с пустых томов при готовых образах — 31 с; в простое все контейнеры вместе около 390 MB (workers 125, mongo 125, minio 73, api 41, dashboard 12, redis 10 MB); остановка workers и api по SIGTERM — код выхода 0 за 0.3 с.
 
