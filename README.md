@@ -68,7 +68,7 @@
   * Утверждение отправки за 20 секунд с помощью горячих клавиш (`Cmd/Ctrl + Enter`).
   * Быстрый Color Picker для моментальной смены палитры во фрейме предпросмотра.
 * 📬 **Умный Email-аутрич и троттлинг:**
-  * Письма уходят с почтового ящика студии: Gmail через OAuth или SMTP (US18, REV-221). Сейчас — временно один общий провайдер (Resend / SendGrid / SMTP).
+  * Письма идут от отправителя студии, которого задает владелец (US18, REV-221). Доставка имитируется: письмо сохраняется в outbox кампании с пометкой «Simulated – not delivered», наружу ничего не уходит.
   * Джиттер-троттлинг (1 письмо в 3 минуты с рандомизацией 15–45 сек) для максимальной защиты репутации домена.
   * DNS-проверка валидности MX-записей перед отправкой и заголовки `List-Unsubscribe`.
 * 📊 **Телеметрия в реальном времени:**
@@ -144,7 +144,7 @@ flowchart LR
 | **Фронтенд дашборда** | React 18+, Vite, Material UI (MUI v6), `@mui/x-data-grid`, TanStack Query v5, Zustand, i18next |
 | **Сгенерированный MVP** | Один HTML5-документ со встроенным CSS, который пишет модель (переменные темы `--rv-*`, Google Fonts), форма записи и Vanilla JS Tracker от кода |
 | **Хранилище & Хостинг** | MinIO (локально), Cloudflare R2 / AWS S3, Cloudflare Pages |
-| **Email-инфраструктура** | Ящик студии: Gmail API (OAuth) или SMTP через Nodemailer (REV-221); временно — общий Resend / SendGrid / SMTP. DNS MX Validator |
+| **Email-инфраструктура** | Отправитель студии и имитированная доставка в outbox (REV-221); ящик студии (Gmail OAuth / SMTP) — будущая работа. DNS MX Validator |
 
 ---
 
@@ -213,11 +213,8 @@ S3_BUCKET_DEMOS=revamp-demos
 S3_ACCESS_KEY=minioadmin
 S3_SECRET_KEY=minioadmin
 
-# Email Outreach (временно, до REV-221: общий провайдер платформы)
-# resend | sendgrid | smtp; без значения одобренное письмо падает при отправке
-EMAIL_PROVIDER=resend
-RESEND_API_KEY=re_your_api_key
-EMAIL_FROM="Revamp Team <outreach@revampdemo.com>"
+# Email Outreach: переменных нет (REV-221). Отправителя задает владелец студии в настройках,
+# доставка имитируется (письмо сохраняется в outbox кампании, наружу ничего не уходит)
 
 # Local Business Discovery (OpenStreetMap работает без ключа)
 GOOGLE_PLACES_API_KEY=

@@ -21,7 +21,7 @@ flowchart LR
   S3 -->|iframe sandbox| Dashboard
 ```
 
-Outreach is sent from the studio's own mailbox (Gmail through OAuth, or SMTP); the platform never sends under its own name. Until [REV-221](https://linear.app/revamp-proect/issue/REV-221) ships, one platform-wide provider (`EMAIL_PROVIDER`: Resend, SendGrid or SMTP, with a global `EMAIL_FROM`) sends for every studio.
+Outreach goes out under the studio's own sender (name and address, set by the owner with `PUT /organization/sender`); the platform never writes under its own name. Delivery is simulated ([REV-221](https://linear.app/revamp-proect/issue/REV-221)): the email worker runs every check of a real send, then records the final message in the campaign's outbox (`GET /outreach/{id}/outbox`, `deliveryMode: SIMULATED`). Nothing leaves the platform. Connecting a real studio mailbox (Gmail OAuth or SMTP) is future work.
 
 | Module (tag) | Resources | Owns |
 | --- | --- | --- |

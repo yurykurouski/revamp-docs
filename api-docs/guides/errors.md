@@ -108,9 +108,10 @@ Two routes answer differently on purpose: `GET /health` returns its status repor
 | `LEAD_NOT_REJECTABLE` | 409 | Reject after approval, or of a closed lead | — |
 | `NO_CONTACT_EMAIL` | 409 | Approve a lead with no email; add one first (none is invented) | — |
 | `EMAIL_QUEUE_UNAVAILABLE` | 503 | Approval written, but the send was not queued within 5 s; lead and campaign are back in `NEEDS_APPROVAL`, nothing will be sent | `{ leadId }` |
-| `EMAIL_PROVIDER_NOT_CONFIGURED` | 503 | Test send with no `EMAIL_PROVIDER` in the API or the workers | — |
+| `SENDER_NOT_CONFIGURED` | 409 | Approve or test send while the studio has no sender; the owner sets it with `PUT /organization/sender` | — |
+| `OUTBOX_NOT_FOUND` | 404 | `GET /outreach/{id}/outbox` for a lead with no recorded email | — |
 | `EMAIL_TEST_TIMEOUT` | 504 | The workers did not answer the test send within 30 s | — |
-| `EMAIL_SEND_FAILED` | 502 | The email provider refused the test message | — |
+| `EMAIL_SEND_FAILED` | 502 | The workers could not render the simulated test message | — |
 
 ### Discovery
 

@@ -49,7 +49,7 @@ graph TB
         W_AI[AI Worker: MvpPageGenerator через LlmClient + checkMvpPage]
         W_Gen[Deploy Worker: finishMvpPage + проверки + S3]
         W_Page[MVP Page Worker: изменение, цвета и шрифты, восстановление]
-        W_Mail[Email Worker: ящик студии - Gmail или SMTP, REV-221]
+        W_Mail[Email Worker: имитация отправки от отправителя студии, REV-221]
     end
 
     subgraph Data [Хранилище данных и кэш]
@@ -90,7 +90,7 @@ graph TB
 * **Поиск бизнесов (Discovery):** OpenStreetMap (Nominatim + Overpass, без ключа, ODbL) и Google Places API (New) Text Search (по ключу).
 * **AI & LLM:** единый `LlmClient` для Anthropic, OpenAI, Gemini и локального Claude Code CLI; каталог провайдеров и моделей — в `@revamp/shared-types` (`LLM_PROVIDER_CATALOG`). Оператор выбирает провайдера и модель для каждой генерации MVP. Страницу MVP (HTML и CSS) пишет модель, но контакты подставляет, ответ проверяет и неподтвержденные факты помечает код (REV-135); метрики и контакты LLM не вычисляет.
 * **Фронтенд:** React (v18+), TypeScript, Vite, Material UI (MUI v6), TanStack Query, Zustand, i18next (en, ru, be, pl, lt).
-* **Email & Deliverability:** каждая студия отправляет письма со своего почтового ящика: Gmail через Google OAuth (Gmail API) или SMTP через Nodemailer (US18, REV-221). Платформа писем от своего имени не отправляет (BA 2.4, US17 — Won't). Генерация пикселей отслеживания и URL-редиректов, DNS-проверка MX. *Сейчас (до REV-221) отправляет один общий провайдер платформы — Resend, SendGrid или SMTP (`EMAIL_PROVIDER`, `EMAIL_FROM`), см. «Настройки воркеров», `email-queue`.*
+* **Email & Deliverability:** каждая студия пишет от своего отправителя (имя и адрес задает владелец в настройках, US18, REV-221); платформа от своего имени не пишет (BA 2.4, US17 — Won't). Доставка в дипломной сборке **имитируется**: воркер проходит все проверки реальной отправки (HITL, студия, захват кампании, DNS-проверка MX), собирает итоговое письмо (заголовки отписки, футер, пиксель отслеживания) и сохраняет его в `EmailCampaign.outbox` с `deliveryMode: 'SIMULATED'`; наружу ничего не уходит. Подключение реального ящика студии (Gmail OAuth или SMTP) — будущая работа.
 * **Хостинг MVP-демо:** AWS S3 / Cloudflare R2 + CloudFront / Wildcard-поддомены (`*.preview.revampsaas.io`).
 * **CI/CD (REV-177):** GitHub Actions (`.github/workflows/ci.yml`). Задача `Gates` на каждый PR, push в `main` и ручной запуск выполняет те же проверки, что и локально (`build:packages`, `typecheck`, `lint`, `test`, `build`); ее имя — обязательная проверка защиты ветки `main`. Задача `Deploy` идет только из `main` после `Gates`: собирает production-образы Docker, затем по SSH переводит сервер на проверенный коммит (`git merge --ff-only`) и запускает `deploy/deploy.sh`. Секреты (`DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`) и переменные (`DEPLOY_PATH`, `DEPLOY_PORT`) хранятся в окружении `production` на GitHub; `.env.production` остается на сервере.
 
@@ -575,6 +575,7 @@ erDiagram
     Organization {
         ObjectId _id PK
         string name
+        object sender
     }
 
     User {
@@ -828,7 +829,10 @@ interface IEmailCampaign {
   auditId: Types.ObjectId;
   mvpProjectId: Types.ObjectId;
   status: 'DRAFT' | 'NEEDS_APPROVAL' | 'APPROVED' | 'SCHEDULED' | 'SENDING' | 'DELIVERED' | 'BOUNCED' | 'REJECTED' | 'UNSUBSCRIBED';
-  senderEmail: string;
+  senderEmail: string;     // адрес отправителя студии на момент отправки (REV-221)
+  senderName?: string;     // имя отправителя студии (REV-221)
+  deliveryMode?: 'SIMULATED';   // доставка имитируется (REV-221)
+  outbox?: { from: string; to: string; subject: string; headers: Map<string, string>; html: string; text: string };  // итоговое письмо
   recipientEmail: string;
   subject: string;
   previewText?: string;
@@ -900,7 +904,9 @@ interface IBusiness {
 
 #### 7. `organizations`, `users`, `memberships` (REV-206)
 ```typescript
-interface IOrganization { _id: Types.ObjectId; name: string; }            // ≤ 100 знаков
+interface IOrganization { _id: Types.ObjectId; name: string;              // ≤ 100 знаков
+  sender?: { name: string; address: string };  // отправитель аутрича студии (REV-221), задает владелец
+}
 
 interface IUser {
   _id: Types.ObjectId;
@@ -984,9 +990,10 @@ interface IInvitation {                      // REV-207
 | `409` | `LEAD_NOT_AWAITING_APPROVAL` | `POST /outreach/:id/approve`: лид не в `NEEDS_APPROVAL` |
 | `409` | `LEAD_NOT_REJECTABLE` | `POST /outreach/:id/reject`: outreach уже одобрен или лид закрыт |
 | `409` | `NO_CONTACT_EMAIL` | `POST /outreach/:id/approve`: у лида нет e-mail |
-| `503` | `EMAIL_PROVIDER_NOT_CONFIGURED` | `POST /outreach/:id/test`: `EMAIL_PROVIDER` не задан в API или у воркеров |
+| `409` | `SENDER_NOT_CONFIGURED` | `POST /outreach/:id/approve`, `POST /outreach/:id/test`: у студии нет отправителя (REV-221) |
+| `404` | `OUTBOX_NOT_FOUND` | `GET /outreach/:id/outbox`: для лида не записано ни одного письма (REV-221) |
 | `504` | `EMAIL_TEST_TIMEOUT` | `POST /outreach/:id/test`: воркеры не ответили за 30 с |
-| `502` | `EMAIL_SEND_FAILED` | `POST /outreach/:id/test`: ошибка почтового провайдера |
+| `502` | `EMAIL_SEND_FAILED` | `POST /outreach/:id/test`: воркер не смог собрать тестовое письмо |
 | `404` | `DISCOVERY_JOB_NOT_FOUND` | `GET /discovery/:jobId`, `POST /discovery/:jobId/import` |
 | `409` | `DISCOVERY_JOB_NOT_COMPLETED` | `POST /discovery/:jobId/import`: задача еще не завершена |
 | `502` | `GEOCODING_UNAVAILABLE` | `GET /discovery/reverse-geocode`: сбой Nominatim |
@@ -1035,10 +1042,13 @@ interface IInvitation {                      // REV-207
 | Метод | Эндпоинт | Описание | Body / Параметры |
 |---|---|---|---|
 | `GET` | `/outreach/pending` | Лиды, ожидающие ручного подтверждения (`NEEDS_APPROVAL`) | — |
-| `POST` | `/outreach/:id/approve`| **[HITL Action]** Одобрить: лид → `SCHEDULED`, письмо в `email-queue` с джиттером. Только из `NEEDS_APPROVAL`; лид и кампания пишутся одной транзакцией (`approveOutreachWithCampaign`, фильтр статуса), иначе `409 LEAD_NOT_AWAITING_APPROVAL` (REV-59). Если задача отправки не поставилась в очередь за 5 с, лид и кампания возвращаются в `NEEDS_APPROVAL` и ответ `503 EMAIL_QUEUE_UNAVAILABLE` (REV-203). `409 NO_CONTACT_EMAIL`, если у лида нет e-mail (REV-45); `404 LEAD_NOT_FOUND`. Дашборд присылает черновик в том виде, как его показывает превью, с подставленными переменными (REV-72). `body` — простой текст: он сохраняется в `bodyPlainText`, а в `bodyHtml` — экранированный HTML с абзацами, переносами строк и скрытым preheader (`draftToHtml` из `@revamp/shared-types`, та же функция, что у тестовой отправки). `subject` (1–300 символов) и `body` (1–20000) обязательны, текста по умолчанию нет: без них `400` и ничего не меняется (REV-61) | `{ subject, body, preheader?, approvedBy?, scheduleTime? }` |
+| `GET` | `/outreach/sender` | Отправитель студии вызывающего, для любой роли (REV-221): `{ configured, name?, address? }` | — |
+| `PUT` | `/organization/sender` | Задать отправителя студии (только владелец, REV-221); пишет только организацию вызывающего; удалить отправителя нельзя, только сменить. `200` с тем же видом, что у `GET /outreach/sender` | `{ name, address }` |
+| `GET` | `/outreach/:id/outbox` | Имитированное письмо лида (REV-221): `{ from, to, subject, headers, html, text, deliveryMode, sentAt }`. Через scope студии, ничего не пишет; `404 OUTBOX_NOT_FOUND`, если письма нет; `404 LEAD_NOT_FOUND` для чужого лида | — |
+| `POST` | `/outreach/:id/approve`| **[HITL Action]** Одобрить: лид → `SCHEDULED`, письмо в `email-queue` с джиттером. Только из `NEEDS_APPROVAL`; лид и кампания пишутся одной транзакцией (`approveOutreachWithCampaign`, фильтр статуса), иначе `409 LEAD_NOT_AWAITING_APPROVAL` (REV-59). Если задача отправки не поставилась в очередь за 5 с, лид и кампания возвращаются в `NEEDS_APPROVAL` и ответ `503 EMAIL_QUEUE_UNAVAILABLE` (REV-203). `409 NO_CONTACT_EMAIL`, если у лида нет e-mail (REV-45); `409 SENDER_NOT_CONFIGURED`, если у студии нет отправителя (ничего не пишется и не ставится в очередь, REV-221); `404 LEAD_NOT_FOUND`. Дашборд присылает черновик в том виде, как его показывает превью, с подставленными переменными (REV-72). `body` — простой текст: он сохраняется в `bodyPlainText`, а в `bodyHtml` — экранированный HTML с абзацами, переносами строк и скрытым preheader (`draftToHtml` из `@revamp/shared-types`, та же функция, что у тестовой отправки). `subject` (1–300 символов) и `body` (1–20000) обязательны, текста по умолчанию нет: без них `400` и ничего не меняется (REV-61) | `{ subject, body, preheader?, approvedBy?, scheduleTime? }` |
 | `POST` | `/outreach/:id/reject` | Отклонить отправку (лид → `REJECTED`). Только до одобрения, атомарно; для `SCHEDULED` и далее, `REJECTED`, `UNSUBSCRIBED` — `409 LEAD_NOT_REJECTABLE` (REV-59); `404 LEAD_NOT_FOUND` | `{ reason: string }` |
 | `POST` | `/mvp/:id/edit` | Изменение страницы своими словами (REV-85, REV-139) по `_id` проекта MVP: задача `change` в `mvp-page-queue`, API ждет до 420 с. Генератор страницы (режим `change`) получает текущую сырую страницу и слова оператора и возвращает всю страницу; `checkMvpPage` и один повтор, как у генерации; принятая страница публикуется как новая версия `change`. `200 { applied: true, version, mvp }` или `{ applied: false, reason: 'unchanged', mvp }`. `400 INVALID_ID`, `404 MVP_NOT_FOUND` / `LEAD_NOT_FOUND`, `409 MVP_PREVIOUS_GENERATOR`, `409 MVP_EDIT_NOT_ALLOWED`, `502 MVP_EDIT_FAILED` (ничего не опубликовано), `504 MVP_EDIT_TIMEOUT`. Статус лида не меняется | `EditMvpSchema`: `{ instruction: string (3–500, trim), operatorLocale? }` |
-| `POST` | `/outreach/:id/test`   | Отправляет текущий черновик (как в превью, с подставленными переменными) на почту оператора через `email-test-queue` и ждёт результата воркера до 30 с (REV-60). Не проходит HITL-гейт, не добавляет пиксель открытий и не меняет лид и `EmailCampaign`. `200` с `{ to, messageId, provider, sentAt }`; `503 EMAIL_PROVIDER_NOT_CONFIGURED`, если `EMAIL_PROVIDER` не задан в API или у воркеров; `502 EMAIL_SEND_FAILED` при ошибке провайдера; `504 EMAIL_TEST_TIMEOUT`, если воркеры не ответили (ожидающая задача удаляется); `404 LEAD_NOT_FOUND`; `400` для неверного id или тела | `{ testEmail, subject, body, preheader? }` |
+| `POST` | `/outreach/:id/test`   | Имитирует отправку текущего черновика (как в превью, с подставленными переменными) на почту оператора через `email-test-queue` и ждёт результата воркера до 30 с (REV-60, REV-221). Не проходит HITL-гейт, не добавляет пиксель открытий, ничего не доставляет и не меняет лид и `EmailCampaign`. `200` с `{ to, from, subject, simulated: true }`; `409 SENDER_NOT_CONFIGURED`, если у студии нет отправителя; `502 EMAIL_SEND_FAILED`, если воркер не собрал письмо; `504 EMAIL_TEST_TIMEOUT`, если воркеры не ответили (ожидающая задача удаляется); `404 LEAD_NOT_FOUND`; `400` для неверного id или тела | `{ testEmail, subject, body, preheader? }` |
 | `PUT` | `/outreach/:id/draft` | *(план)* Сохранение черновика без отправки | `{ subject, bodyHtml }` |
 
 ### 5.4. Поиск локальных бизнесов (`/discovery`) — REV-26…REV-29
@@ -1139,15 +1149,15 @@ graph LR
 5. **`email-queue` Worker:**
    * Throttling: строго 1 письмо в 3 минуты (BullMQ limiter `max: 1, duration: 180000`).
    * Jitter: случайная задержка 15–45 секунд, рассчитываемая API при постановке задачи.
-   * Отправитель (целевая схема, US18, REV-221): почтовый ящик студии, которой принадлежит лид. Владелец студии подключает его в дашборде — Gmail через Google OAuth (только право отправки) или SMTP. Учетные данные хранятся у студии в зашифрованном виде и не попадают в ответы API и логи. `From` — адрес студии, `EmailCampaign.senderEmail` — адрес, с которого письмо реально ушло. Без подключенного ящика одобрить аутрич нельзя; отозванный токен — видимая ошибка отправки, а не «отправлено». Лимит писем в сутки — на ящик (у Gmail около 500 в сутки для личного аккаунта и около 2000 для Workspace).
-   * Провайдер сейчас (временно, до REV-221): один общий для всех студий `EMAIL_PROVIDER` (`resend`, `sendgrid` или `smtp`) и общий `EMAIL_FROM`; значения по умолчанию нет. Без него задача отправки завершается ошибкой, а не помечает письмо отправленным (REV-45).
+   * Отправитель (US18, REV-221): `Organization.sender` студии лида, прочитанный в момент отправки (смена отправителя после одобрения применяется). `From` — `"<имя>" <адрес>` студии; `EmailCampaign.senderEmail` и `senderName` записывают отправителя, от которого письмо собрано. Без отправителя одобрить аутрич нельзя (`409 SENDER_NOT_CONFIGURED`); задача студии, у которой отправителя нет (поставленная до REV-221), возвращает лид на проверку (`revertOutreachApproval`).
+   * Доставка имитируется (REV-221, письменное исключение из правила REV-45): итоговое письмо (`renderOutreachMessage` из `@revamp/shared-types`: заголовки `List-Unsubscribe`, футер отписки, пиксель открытий) сохраняется в `EmailCampaign.outbox` с `deliveryMode: 'SIMULATED'`, наружу ничего не уходит. Дашборд всегда подписывает такое письмо «Simulated – not delivered» и показывает его во фрейме с пустым `sandbox` и CSP, который ничего не загружает, поэтому просмотр не считается открытием или кликом.
    * Содержимое: `bodyHtml` и `bodyPlainText` кампании отправляются как HTML- и текстовая части письма без изменений. Оба заполняются при одобрении из того же черновика, что видел оператор, поэтому реальное письмо совпадает с тестовым (REV-72).
-   * Не больше одного письма на одобрение (REV-61). Перед отправкой воркер атомарно захватывает кампанию (`SCHEDULED`/`APPROVED` → `SENDING`, `findOneAndUpdate` с фильтром статуса). Сразу после того как провайдер принял письмо, кампания получает `DELIVERED` и `sentAt`, затем лид — `SENT`. Если провайдер вернул ошибку, захват снимается (`SENDING` → `SCHEDULED`) и ретрай отправляет письмо. Ретрай пропускает кампанию в `SENDING` (письмо могло уже уйти) и для кампании в `DELIVERED` только дописывает `SENT` у лида, без повторной отправки.
+   * Не больше одного письма на одобрение (REV-61). Перед отправкой воркер атомарно захватывает кампанию (`SCHEDULED`/`APPROVED` → `SENDING`, `findOneAndUpdate` с фильтром статуса). Сразу после сборки письма кампания получает `DELIVERED`, `sentAt`, `deliveryMode` и `outbox` одной записью, затем лид — `SENT`. Ретрай пропускает кампанию в `SENDING` (письмо могло уже уйти) и для кампании в `DELIVERED` только дописывает `SENT` у лида, без повторной отправки.
    * Только одобренный текст (REV-61): без кампании или с пустыми темой/телом задача падает с `UnrecoverableError` без ретраев и ничего не отправляет. Текста по умолчанию нет.
 6. **`email-test-queue` Worker (REV-60):**
    * Тестовая отправка черновика оператору. Отдельная очередь, чтобы тест не ждал лимита аутрича и не задерживал его: concurrency `1`, без limiter, 1 попытка без ретраев (оператор ждёт ответа).
-   * Тот же `emailService` и провайдер, что у `email-queue`, но без HITL-гейта, MX-проверки и пикселя открытий (`trackOpens: false`); тема с префиксом `[Test]`. Лид и `EmailCampaign` не читаются и не меняются.
-   * API ждёт результата через `QueueEvents` до 30 с. Без провайдера задача падает с `EMAIL_PROVIDER_NOT_CONFIGURED`, и API отвечает `503`.
+   * Письмо собирается так же, как у `email-queue`, от отправителя студии, но без HITL-гейта, MX-проверки и пикселя открытий (`trackOpens: false`); тема с префиксом `[Test]`. Ничего не доставляется и не сохраняется (REV-221); лид и `EmailCampaign` не читаются и не меняются. Ответ — `{ to, from, subject, simulated: true }`.
+   * API ждёт результата через `QueueEvents` до 30 с. Без отправителя студии задача падает с `SENDER_NOT_CONFIGURED`, и API отвечает `409`.
 7. **`mvp-page-queue` Worker (REV-139):**
    * Изменения опубликованной страницы модели: concurrency `1` (по одной задаче, чтобы версии не пересекались), 1 попытка без ретраев (оператор ждёт ответа), API ждёт результата через `QueueEvents` до 420 с (`change`) или 120 с (`controls`, `restore`).
    * `change` — генератор страницы в режиме `change` (Агент 2): текущая сырая страница и слова оператора, `checkMvpPage`, один повтор; `controls` — сохраняет цвета и шрифты оператора без модели; `restore` — проверяет сырую страницу версии по текущему аудиту (`unusable_version` → `409 MVP_VERSION_UNUSABLE`).
@@ -1230,7 +1240,7 @@ gantt
 * Модальное окно оператора: HITL-подтверждение, правка текста и регенерация блоков.
 
 ### Фаза 4: Почтовый аутрич и трекинг (Недели 10–12)
-* Очередь отправки писем с защитой доменов (BullMQ + Nodemailer / Resend). *Исторический план; целевая схема — ящик студии (US18, REV-221).*
+* Очередь отправки писем с защитой доменов (BullMQ + Nodemailer / Resend). *Исторический план; с REV-221 доставка имитируется, а письмо идет от отправителя студии (US18).*
 * Сервер отслеживания кликов, открытий и времени нахождения на демо-сайте.
 * Экран аналитики конверсий и интеграционное тестирование всего цикла.
 

@@ -2,6 +2,19 @@
 
 Changes to the public surface of `/api/v1`, newest first, with the Linear ticket that made each one. The format follows [Keep a Changelog](https://keepachangelog.com/); the specification version (`info.version` in `reference/openapi.yaml`) follows [SemVer](https://semver.org/). Releases before 1.0.0 were not versioned; their entries are grouped by date.
 
+## [2.0.0] — 2026-11-25
+
+### Added
+- **Studio sender (REV-221).** `PUT /organization/sender` (owners) sets the name and address outreach goes out under; `GET /outreach/sender` (every role) reads it. Code `SENDER_NOT_CONFIGURED`.
+- **Simulated outbox (REV-221).** `GET /outreach/{id}/outbox` returns the email recorded for a lead (`deliveryMode: SIMULATED`); nothing is delivered outside the platform. Code `OUTBOX_NOT_FOUND`.
+
+### Changed
+- **Breaking (REV-221):** `POST /outreach/{id}/test` answers `{ to, from, subject, simulated: true }` instead of `{ to, messageId, provider, sentAt }`, and `409 SENDER_NOT_CONFIGURED` when the studio has no sender.
+- `POST /outreach/{id}/approve` answers `409 SENDER_NOT_CONFIGURED` when the studio has no sender; nothing is written or queued (REV-221).
+
+### Removed
+- **Breaking (REV-221):** code `EMAIL_PROVIDER_NOT_CONFIGURED` (`503`); the platform-wide email provider is gone.
+
 ## [1.0.0] — 2026-11-22
 
 First versioned specification: `reference/openapi.yaml` (OpenAPI 3.0.3), request schemas generated from `@revamp/validation`, guides and examples.

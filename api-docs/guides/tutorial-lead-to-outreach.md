@@ -113,7 +113,7 @@ curl -s "$API/outreach/$LEAD_ID/test" -H "$AUTH" -H 'Content-Type: application/j
   -d '{"testEmail":"you@your-studio.test","subject":"A new home page for Smile Dental Clinic","body":"Hello,\n\nwe made a faster, mobile-friendly version of your home page.\n\nBest regards"}' | jq
 ```
 
-`503 EMAIL_PROVIDER_NOT_CONFIGURED` means set `EMAIL_PROVIDER` (`resend`, `sendgrid` or `smtp`) for the API and the workers. This platform-wide provider is interim: with [REV-221](https://linear.app/revamp-proect/issue/REV-221) each studio sends from its own connected mailbox.
+`409 SENDER_NOT_CONFIGURED` means the studio has no sender yet: the owner sets it with `PUT /organization/sender` (`{ name, address }`). Sends are simulated ([REV-221](https://linear.app/revamp-proect/issue/REV-221)): the test answers `{ to, from, subject, simulated: true }`, and after approval the recorded email is at `GET /outreach/{id}/outbox`.
 
 ## 7. Approve (or reject) the outreach
 

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Revamp SaaS API
-  version: 1.0.0
+  version: 2.0.0
   description: |
     Revamp finds local businesses with dated websites, audits each site in a real browser, has a model design a new
     home page from the site's own content, and sends the owner a personal email with the prototype **only after an
@@ -318,6 +318,64 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/InvitationNotFound'
+  /organization/sender:
+    put:
+      tags:
+        - Organization
+      operationId: setStudioSender
+      summary: Set the studio's outreach sender (owners)
+      description: |
+        Name and address every outreach email of the studio goes out under (REV-221). It can be changed, not removed.
+        Approving outreach and test sends need it. Delivery is simulated: nothing leaves the platform.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StudioSender'
+            example:
+              name: Smile Studio
+              address: hello@smile-studio.example
+      responses:
+        '200':
+          description: The sender as saved
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                properties:
+                  success:
+                    type: boolean
+                    enum:
+                      - true
+                  data:
+                    type: object
+                    required:
+                      - configured
+                    properties:
+                      configured:
+                        type: boolean
+                      name:
+                        type: string
+                        maxLength: 100
+                      address:
+                        type: string
+                        format: email
+              example:
+                success: true
+                data:
+                  configured: true
+                  name: Smile Studio
+                  address: hello@smile-studio.example
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /organization/members/{userId}:
     parameters:
       - name: userId
@@ -1236,6 +1294,121 @@ paths:
                     type: integer
         '401':
           $ref: '#/components/responses/Unauthenticated'
+  /outreach/sender:
+    get:
+      tags:
+        - Outreach
+      operationId: getStudioSender
+      summary: The caller's studio sender (every role)
+      description: The sender set by the studio owner (REV-221), or `configured false` when there is none yet.
+      responses:
+        '200':
+          description: The studio sender
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                properties:
+                  success:
+                    type: boolean
+                    enum:
+                      - true
+                  data:
+                    type: object
+                    required:
+                      - configured
+                    properties:
+                      configured:
+                        type: boolean
+                      name:
+                        type: string
+                        maxLength: 100
+                      address:
+                        type: string
+                        format: email
+              example:
+                success: true
+                data:
+                  configured: true
+                  name: Smile Studio
+                  address: hello@smile-studio.example
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /outreach/{id}/outbox:
+    get:
+      tags:
+        - Outreach
+      operationId: getOutbox
+      summary: The simulated email recorded for a lead
+      description: |
+        Delivery is simulated (REV-221): the email worker records the final message (From the studio sender at send
+        time, unsubscribe headers and footer, open pixel) instead of delivering it. Reading it writes nothing; it is not
+        an open or a click.
+      parameters:
+        - $ref: '#/components/parameters/ObjectIdPath'
+      responses:
+        '200':
+          description: The recorded message
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                properties:
+                  success:
+                    type: boolean
+                    enum:
+                      - true
+                  data:
+                    type: object
+                    required:
+                      - from
+                      - to
+                      - subject
+                      - headers
+                      - html
+                      - text
+                      - deliveryMode
+                      - sentAt
+                    properties:
+                      from:
+                        type: string
+                        example: '"Smile Studio" <hello@smile-studio.example>'
+                      to:
+                        type: string
+                        format: email
+                      subject:
+                        type: string
+                      headers:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      html:
+                        type: string
+                      text:
+                        type: string
+                      deliveryMode:
+                        type: string
+                        enum:
+                          - SIMULATED
+                      sentAt:
+                        type: string
+                        format: date-time
+        '400':
+          $ref: '#/components/responses/InvalidId'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: '`LEAD_NOT_FOUND` (also another studio''s lead) or `OUTBOX_NOT_FOUND` (no email recorded for the lead)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /outreach/{id}/approve:
     post:
       tags:
@@ -1312,7 +1485,7 @@ paths:
         '404':
           $ref: '#/components/responses/LeadNotFound'
         '409':
-          description: '`LEAD_NOT_AWAITING_APPROVAL` (not in `NEEDS_APPROVAL`) or `NO_CONTACT_EMAIL` (the lead has no email)'
+          description: '`LEAD_NOT_AWAITING_APPROVAL` (not in `NEEDS_APPROVAL`), `NO_CONTACT_EMAIL` (the lead has no email) or `SENDER_NOT_CONFIGURED` (the studio has no sender; nothing is written or queued)'
           content:
             application/json:
               schema:
@@ -1399,10 +1572,11 @@ paths:
       tags:
         - Outreach
       operationId: sendTestEmail
-      summary: Send the current draft to the operator's own address
+      summary: Simulate sending the current draft to the operator's own address
       description: |
         Goes to the operator, not to the business, so it skips the approval gate; it carries no tracking pixel and never
-        changes the lead or its campaign. Waits up to 30 s for the email worker.
+        changes the lead or its campaign. Delivery is simulated (REV-221): the message is rendered From the studio sender
+        and nothing is delivered or stored. Waits up to 30 s for the email worker.
       parameters:
         - $ref: '#/components/parameters/ObjectIdPath'
       requestBody:
@@ -1420,7 +1594,7 @@ paths:
                 …
       responses:
         '200':
-          description: Sent
+          description: Simulated, not delivered
           content:
             application/json:
               schema:
@@ -1439,20 +1613,22 @@ paths:
                     type: object
                     required:
                       - to
-                      - provider
-                      - sentAt
+                      - from
+                      - subject
+                      - simulated
                     properties:
                       to:
                         type: string
                         format: email
-                      messageId:
+                      from:
                         type: string
-                      provider:
+                        example: '"Smile Studio" <hello@smile-studio.example>'
+                      subject:
                         type: string
-                        example: resend
-                      sentAt:
-                        type: string
-                        format: date-time
+                      simulated:
+                        type: boolean
+                        enum:
+                          - true
         '400':
           description: '`INVALID_ID` or `VALIDATION_ERROR`'
           content:
@@ -1465,14 +1641,14 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/LeadNotFound'
-        '502':
-          description: '`EMAIL_SEND_FAILED`: the email provider refused the message'
+        '409':
+          description: '`SENDER_NOT_CONFIGURED`: the studio has no sender yet; the owner sets it with `PUT /organization/sender`'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '503':
-          description: '`EMAIL_PROVIDER_NOT_CONFIGURED`: `EMAIL_PROVIDER` is not set in the API or in the workers'
+        '502':
+          description: '`EMAIL_SEND_FAILED`: the workers could not render the simulated message'
           content:
             application/json:
               schema:
@@ -2133,7 +2309,8 @@ components:
         - LEAD_NOT_AWAITING_APPROVAL
         - LEAD_NOT_REJECTABLE
         - NO_CONTACT_EMAIL
-        - EMAIL_PROVIDER_NOT_CONFIGURED
+        - SENDER_NOT_CONFIGURED
+        - OUTBOX_NOT_FOUND
         - EMAIL_TEST_TIMEOUT
         - EMAIL_SEND_FAILED
         - DISCOVERY_JOB_NOT_FOUND
@@ -3094,6 +3271,20 @@ components:
       required:
         - email
         - role
+    StudioSender:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        address:
+          type: string
+          format: email
+          maxLength: 320
+      required:
+        - name
+        - address
     ChangeMemberRole:
       type: object
       properties:
