@@ -146,7 +146,7 @@
 | `leadId` | ObjectId → `leads` | да |  | Уникально: одна кампания на лид |
 | `auditId`, `mvpProjectId` | ObjectId |  |  | Ссылки на аудит и MVP, на основе которых написано письмо |
 | `status` | String (enum) |  |  | `DRAFT`, `NEEDS_APPROVAL`, `APPROVED`, `SCHEDULED`, `SENDING`, `DELIVERED`, `BOUNCED`, `REJECTED`, `UNSUBSCRIBED`; по умолчанию `DRAFT` |
-| `senderEmail` | String | да | ✔ | Адрес отправителя (оператора) |
+| `senderEmail` | String | да | ✔ | Адрес отправителя. Цель (REV-221): адрес подключенного ящика студии, с которого письмо ушло; сейчас — общий `EMAIL_FROM` |
 | `recipientEmail` | String | да | ✔ | Адрес получателя, нижний регистр |
 | `subject`, `bodyHtml` | String | да |  | Тема и тело письма; без них отправка не запускается |
 | `previewText`, `bodyPlainText` | String |  |  | Прехедер и текстовая версия |

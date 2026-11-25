@@ -15,11 +15,13 @@ flowchart LR
   Workers -->|Playwright| Site[(Business website)]
   Workers -->|LLM calls, Zod-validated| LLM[Anthropic / OpenAI / Gemini]
   Workers -->|static HTML| S3[(MinIO / S3<br/>revamp-demos)]
-  Workers -->|after approval only| Mail[Resend / SendGrid / SMTP]
+  Workers -->|after approval only| Mail[Studio mailbox<br/>Gmail or SMTP]
   Owner([Business owner]) -->|opens email, prototype| Track[API /track/*]
   Track --> Mongo
   S3 -->|iframe sandbox| Dashboard
 ```
+
+Outreach is sent from the studio's own mailbox (Gmail through OAuth, or SMTP); the platform never sends under its own name. Until [REV-221](https://linear.app/revamp-proect/issue/REV-221) ships, one platform-wide provider (`EMAIL_PROVIDER`: Resend, SendGrid or SMTP, with a global `EMAIL_FROM`) sends for every studio.
 
 | Module (tag) | Resources | Owns |
 | --- | --- | --- |
