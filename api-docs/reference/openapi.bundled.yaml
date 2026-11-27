@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Revamp SaaS API
-  version: 2.0.0
+  version: 2.1.0
   description: |
     Revamp finds local businesses with dated websites, audits each site in a real browser, has a model design a new
     home page from the site's own content, and sends the owner a personal email with the prototype **only after an
@@ -553,6 +553,11 @@ paths:
         If the queue does not accept the job within 5 s, the lead is moved to `AUDIT_FAILED` and the answer is
         `503 AUDIT_QUEUE_UNAVAILABLE` with `details.leadId`; retry with `POST /audits/trigger`.
         Without `contactEmail` the audit takes the email from the site; none is invented.
+
+        Adding a lead claims the studio's exclusive right to contact the business (REV-225) in the same transaction:
+        `CONTACT_RIGHT_DAYS` (14 days), then a cooldown of `CONTACT_COOLDOWN_DAYS` (30 days) for every studio. A
+        business another studio holds, in cooldown or opted out is refused with a 409 and nothing is created. A refusal
+        never names the other studio.
       requestBody:
         required: true
         content:
@@ -598,6 +603,15 @@ paths:
                       jobId:
                         type: string
                         description: BullMQ job id of the audit (or of the generation when an audit was reused)
+                      contactRight:
+                        type: object
+                        description: The contact right claimed with the lead (REV-225)
+                        required:
+                          - expiresAt
+                        properties:
+                          expiresAt:
+                            type: string
+                            format: date-time
               example:
                 success: true
                 message: Lead created and audit queued successfully
@@ -620,6 +634,8 @@ paths:
                     updatedAt: '2026-11-22T10:20:00.000Z'
                   auditId: 6740a1f09d4e5a0012ab35ab
                   jobId: '41'
+                  contactRight:
+                    expiresAt: '2026-12-06T10:20:00.000Z'
         '400':
           description: '`VALIDATION_ERROR` (body), or `INVALID_URL` when `originalUrl` cannot be parsed'
           content:
@@ -643,18 +659,32 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
-          description: '`LEAD_ALREADY_EXISTS`: the studio already has a lead for this site; `details.leadId` is that lead'
+          description: |
+            `LEAD_ALREADY_EXISTS`: the studio already has a lead for this site; `details.leadId` is that lead.
+            `CONTACT_RIGHT_HELD`: another studio holds the right to contact the business; `details.expiresAt` is when it ends.
+            `BUSINESS_IN_COOLDOWN`: a right ended recently; `details.availableAt` is when the business can be claimed again.
+            `BUSINESS_OPTED_OUT`: the business, or the contact address, asked not to be contacted.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                success: false
-                error:
-                  code: LEAD_ALREADY_EXISTS
-                  message: Your studio already has a lead for this site
-                  details:
-                    leadId: 6740a1f09d4e5a0012ab35aa
+              examples:
+                leadAlreadyExists:
+                  value:
+                    success: false
+                    error:
+                      code: LEAD_ALREADY_EXISTS
+                      message: Your studio already has a lead for this site
+                      details:
+                        leadId: 6740a1f09d4e5a0012ab35aa
+                contactRightHeld:
+                  value:
+                    success: false
+                    error:
+                      code: CONTACT_RIGHT_HELD
+                      message: Another studio holds the right to contact this business until 2026-12-06T10:20:00.000Z.
+                      details:
+                        expiresAt: '2026-12-06T10:20:00.000Z'
         '503':
           $ref: '#/components/responses/AuditQueueUnavailable'
     get:
@@ -2328,6 +2358,9 @@ components:
         - INVITATION_EXPIRED
         - INVITATION_EMAIL_MISMATCH
         - LEAD_ALREADY_EXISTS
+        - CONTACT_RIGHT_HELD
+        - BUSINESS_IN_COOLDOWN
+        - BUSINESS_OPTED_OUT
     ErrorResponse:
       type: object
       required:
@@ -3113,6 +3146,22 @@ components:
           type: object
           additionalProperties: true
           description: Pre-assessment of the site (verdict and signs)
+        unavailable:
+          type: object
+          description: 'A `new` candidate the studio cannot claim now (REV-225): held by another studio, in cooldown or opted out'
+          required:
+            - reason
+          properties:
+            reason:
+              type: string
+              enum:
+                - held
+                - cooldown
+                - opted_out
+            until:
+              type: string
+              format: date-time
+              description: When the other right ends (held) or the cooldown ends (cooldown)
     DiscoveryJobStatus:
       type: object
       required:
@@ -3203,8 +3252,15 @@ components:
                   - not_importable
                   - not_found
                   - failed
+                  - right_held
+                  - cooldown
+                  - opted_out
               leadId:
                 $ref: '#/components/schemas/ObjectId'
+              until:
+                type: string
+                format: date-time
+                description: For right_held and cooldown (REV-225)
     ReverseGeocodeResult:
       type: object
       required:

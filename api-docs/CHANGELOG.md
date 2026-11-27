@@ -2,6 +2,12 @@
 
 Changes to the public surface of `/api/v1`, newest first, with the Linear ticket that made each one. The format follows [Keep a Changelog](https://keepachangelog.com/); the specification version (`info.version` in `reference/openapi.yaml`) follows [SemVer](https://semver.org/). Releases before 1.0.0 were not versioned; their entries are grouped by date.
 
+## [2.1.0] — 2026-11-27
+
+### Added
+- **Contact rights on Add lead (REV-225).** `POST /leads` and discovery import claim the studio's exclusive right to contact the business (14 days, then a 30-day cooldown for every studio). A 201 carries `data.contactRight.expiresAt`. Codes `CONTACT_RIGHT_HELD` (`details.expiresAt`), `BUSINESS_IN_COOLDOWN` (`details.availableAt`), `BUSINESS_OPTED_OUT`; none names the other studio.
+- Discovery candidates carry `unavailable: { reason, until? }`; import outcomes `right_held`, `cooldown`, `opted_out` with `until`.
+
 ## [2.0.0] — 2026-11-25
 
 ### Added
