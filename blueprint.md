@@ -453,6 +453,9 @@ erDiagram
     Lead ||--o{ Audit : has
     Business ||--o{ Lead : "pursued by studios"
     Business ||--o{ Audit : "measured by"
+    Business ||--o{ ContactRight : "held through"
+    Organization ||--o{ ContactRight : holds
+    Lead ||--o{ ContactRight : "claimed for"
     Organization ||--o{ Lead : owns
     Lead ||--o| MvpProject : "has (one per lead)"
     Audit ||--o| MvpProject : generates
@@ -490,6 +493,25 @@ erDiagram
         string businessName
         string niche
         string city
+        object contactHold
+        date optedOutAt
+    }
+
+    ContactRight {
+        ObjectId _id PK
+        ObjectId tenantId FK
+        ObjectId businessId FK
+        ObjectId leadId FK
+        string source
+        date grantedAt
+        date expiresAt
+        date cooldownUntil
+        date endedAt
+    }
+
+    SuppressedAddress {
+        ObjectId _id PK
+        string hash UK
     }
 
     Audit {
@@ -896,11 +918,33 @@ interface IBusiness {
   businessName: string;
   niche: NicheType;
   city?: string;
+  contactHold?: { rightId: Types.ObjectId; tenantId: Types.ObjectId; expiresAt: Date; cooldownUntil: Date };  // REV-224
+  optedOutAt?: Date;    // отказ бизнеса от писем: блокирует все студии (REV-224, REV-227)
 }
 ```
 * Бизнес пишется upsert-ом с фильтром `{ domain }` (повтор один раз после E11000, как в REV-201); лид хранит копии полей идентичности, аудит — `leadId` лида, который его запустил, и `businessId`.
 * Чтение аудита лида (`findAuditForLead`): свой самый новый аудит, иначе самый новый `COMPLETED` аудит бизнеса. Проверка id аудита из запроса — `auditBelongsToLead`.
 * Индексы: уникальный `businesses.domain`; частичный уникальный `leads.{ tenantId, businessId }` и `leads.businessId`; составной `audits.{ businessId, status, createdAt: -1 }`. Аудит после `COMPLETED` только для чтения: воркеры публикации ничего не пишут в него (баннер сравнения хранится на лиде и в MVP). `POST /mvp/generate` несёт `leadId`; id аудита без `leadId` отклоняется, если аудит читает больше одного лида; `GET /mvp/:id` не ищет по id аудита.
+
+#### 6a. Реестр контактов: `contactrights`, `suppressedaddresses` (REV-224, эпик E2)
+```typescript
+interface IContactRight {
+  _id: Types.ObjectId;
+  tenantId: Types.ObjectId;     // студия-держатель
+  businessId: Types.ObjectId;   // общий бизнес
+  leadId: Types.ObjectId;       // лид студии, для которого выдано право
+  source: 'ADD_LEAD' | 'PURCHASE' | 'MIGRATION';
+  grantedAt: Date;
+  expiresAt: Date;              // grantedAt + CONTACT_RIGHT_DAYS (14)
+  cooldownUntil: Date;          // expiresAt + CONTACT_COOLDOWN_DAYS (30)
+  endedAt?: Date; endReason?: 'opted_out';
+}
+interface ISuppressedAddress { _id: Types.ObjectId; hash: string; }   // SHA-256 адреса после trim().toLowerCase(), уникален
+```
+* Право выдаётся только `grantContactRight` (`@revamp/db`): в сессии вызывающего (или своей транзакции) сравнение-и-замена `Business.contactHold` с фильтром «удержания нет или `cooldownUntil <= now`, бизнес не отказался», затем запись `ContactRight` с тем же id. Одновременные выдачи на один бизнес дают ровно одного победителя (20 параллельных на настоящем `mongod`); отказ — результат `opted_out` / `held` (с `expiresAt`) / `cooldown` (с `availableAt`), без записи и без имени чужой студии. Охлаждение блокирует все студии, включая бывшего держателя. Сроки передаёт вызывающий (`CONTACT_RIGHT_DAYS`, `CONTACT_COOLDOWN_DAYS` в env API); пакет env не читает.
+* Действующее право: `findActiveContactRight` (`grantedAt <= now < expiresAt`, без `endedAt`). `endContactRight` завершает право досрочно и сдвигает начало охлаждения (для отказа, REV-227).
+* Существующие лиды: `npm run migrate:contact-rights --workspace=@revamp/api` (пробный прогон, `-- --apply`): самый старый открытый лид студии на бизнес получает право с момента миграции (закрытые `REJECTED`, `AUDIT_FAILED` — никогда), лиды других студий перечисляются как конфликты без изменений; бизнес с лидом `UNSUBSCRIBED` получает `optedOutAt` и хэш адреса. API и воркеры предупреждают при старте, пока миграция не прошла (`checkContactRights`).
+* Выдача при добавлении лида, проверка при одобрении и отправке, отказ на все студии и дашборд — REV-225 … REV-228.
 
 #### 7. `organizations`, `users`, `memberships` (REV-206)
 ```typescript
