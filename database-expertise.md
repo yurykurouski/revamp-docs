@@ -95,6 +95,7 @@
 | `previewUrl`, `comparisonBannerUrl` | String |  |  | Ссылки на демо-страницу и баннер «до / после» |
 | `mvpGeneratedAt` | Date |  |  | Когда сгенерирована демо-страница |
 | `generationError`, `generationFailure`, `auditError` | String / Mixed |  |  | Причина последней ошибки генерации или аудита для оператора |
+| `outreachError` | вложенный объект |  |  | Почему отправка остановлена и лид вернулся на проверку (REV-226): `code` (`CONTACT_RIGHT_EXPIRED`), `message` (до 500 знаков), `at`. Строит и проверяет `LeadOutreachErrorSchema` воркер, пишет `revertOutreachApproval` с валидаторами модели; следующее одобрение стирает |
 | `siteComplexity` | String (enum) |  |  | Класс сложности сайта по последнему аудиту |
 | `onePageBrochure` | Boolean |  |  | Сайт-визитка из одной страницы; такие лиды в списке первые |
 

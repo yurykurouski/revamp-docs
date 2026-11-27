@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Revamp SaaS API
-  version: 2.1.0
+  version: 2.2.0
   description: |
     Revamp finds local businesses with dated websites, audits each site in a real browser, has a model design a new
     home page from the site's own content, and sends the owner a personal email with the prototype **only after an
@@ -1515,7 +1515,7 @@ paths:
         '404':
           $ref: '#/components/responses/LeadNotFound'
         '409':
-          description: '`LEAD_NOT_AWAITING_APPROVAL` (not in `NEEDS_APPROVAL`), `NO_CONTACT_EMAIL` (the lead has no email) or `SENDER_NOT_CONFIGURED` (the studio has no sender; nothing is written or queued)'
+          description: '`LEAD_NOT_AWAITING_APPROVAL` (not in `NEEDS_APPROVAL`), `NO_CONTACT_EMAIL` (the lead has no email) `SENDER_NOT_CONFIGURED` (the studio has no sender) or `CONTACT_RIGHT_REQUIRED` (the studio holds no active right to contact the business; `details.expiredAt` when it had one; REV-226). Nothing is written or queued'
           content:
             application/json:
               schema:
@@ -2340,6 +2340,7 @@ components:
         - LEAD_NOT_REJECTABLE
         - NO_CONTACT_EMAIL
         - SENDER_NOT_CONFIGURED
+        - CONTACT_RIGHT_REQUIRED
         - OUTBOX_NOT_FOUND
         - EMAIL_TEST_TIMEOUT
         - EMAIL_SEND_FAILED
@@ -2688,6 +2689,24 @@ components:
               format: date-time
         auditError:
           type: string
+        outreachError:
+          type: object
+          description: Why the email worker stopped a send and returned the lead to review (REV-226); cleared by the next approval
+          required:
+            - code
+            - message
+            - at
+          properties:
+            code:
+              type: string
+              enum:
+                - CONTACT_RIGHT_EXPIRED
+            message:
+              type: string
+              maxLength: 500
+            at:
+              type: string
+              format: date-time
         siteComplexity:
           type: string
           enum:

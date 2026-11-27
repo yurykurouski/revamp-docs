@@ -111,6 +111,7 @@ Two routes answer differently on purpose: `GET /health` returns its status repor
 | `LEAD_NOT_REJECTABLE` | 409 | Reject after approval, or of a closed lead | — |
 | `NO_CONTACT_EMAIL` | 409 | Approve a lead with no email; add one first (none is invented) | — |
 | `EMAIL_QUEUE_UNAVAILABLE` | 503 | Approval written, but the send was not queued within 5 s; lead and campaign are back in `NEEDS_APPROVAL`, nothing will be sent | `{ leadId }` |
+| `CONTACT_RIGHT_REQUIRED` | 409 | Approve while the studio holds no active right to contact the lead's business (expired or ended, REV-226) | `{ expiredAt }` when the studio had a right |
 | `SENDER_NOT_CONFIGURED` | 409 | Approve or test send while the studio has no sender; the owner sets it with `PUT /organization/sender` | — |
 | `OUTBOX_NOT_FOUND` | 404 | `GET /outreach/{id}/outbox` for a lead with no recorded email | — |
 | `EMAIL_TEST_TIMEOUT` | 504 | The workers did not answer the test send within 30 s | — |

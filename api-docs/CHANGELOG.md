@@ -2,6 +2,12 @@
 
 Changes to the public surface of `/api/v1`, newest first, with the Linear ticket that made each one. The format follows [Keep a Changelog](https://keepachangelog.com/); the specification version (`info.version` in `reference/openapi.yaml`) follows [SemVer](https://semver.org/). Releases before 1.0.0 were not versioned; their entries are grouped by date.
 
+## [2.2.0] — 2026-11-27
+
+### Added
+- **Outreach needs an active contact right (REV-226).** `POST /outreach/{id}/approve` answers `409 CONTACT_RIGHT_REQUIRED` (`details.expiredAt`) when the studio holds no active right for the lead's business; nothing is written or queued. Test sends need no right.
+- `Lead.outreachError` (`{ code: CONTACT_RIGHT_EXPIRED, message, at }`): set when the email worker stops a send because the right ended; cleared by the next approval.
+
 ## [2.1.0] — 2026-11-27
 
 ### Added
