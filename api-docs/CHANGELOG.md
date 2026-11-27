@@ -2,6 +2,11 @@
 
 Changes to the public surface of `/api/v1`, newest first, with the Linear ticket that made each one. The format follows [Keep a Changelog](https://keepachangelog.com/); the specification version (`info.version` in `reference/openapi.yaml`) follows [SemVer](https://semver.org/). Releases before 1.0.0 were not versioned; their entries are grouped by date.
 
+## [2.4.0] — 2026-11-28
+
+### Added
+- **The lead's contact right (REV-228).** `GET /leads` items and `GET /leads/{id}` carry `contactRight` (`{ expiresAt, active, endedAt?, endReason? }` or `null`): the studio's newest right on the lead's business, never another studio's.
+
 ## [2.3.0] — 2026-11-27
 
 ### Changed

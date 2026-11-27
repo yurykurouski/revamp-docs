@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Revamp SaaS API
-  version: 2.3.0
+  version: 2.4.0
   description: |
     Revamp finds local businesses with dated websites, audits each site in a real browser, has a model design a new
     home page from the site's own content, and sends the owner a personal email with the prototype **only after an
@@ -2694,6 +2694,27 @@ components:
               format: date-time
         auditError:
           type: string
+        contactRight:
+          type: object
+          nullable: true
+          description: The studio's newest contact right on the lead's business (REV-228); null when it has none. Never another studio's right.
+          required:
+            - expiresAt
+            - active
+          properties:
+            expiresAt:
+              type: string
+              format: date-time
+            active:
+              type: boolean
+              description: Granted, not expired and not ended at the time of the request
+            endedAt:
+              type: string
+              format: date-time
+            endReason:
+              type: string
+              enum:
+                - opted_out
         outreachError:
           type: object
           description: Why the email worker stopped a send and returned the lead to review (REV-226); cleared by the next approval
