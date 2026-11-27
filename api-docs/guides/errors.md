@@ -78,7 +78,7 @@ Two routes answer differently on purpose: `GET /health` returns its status repor
 | `LEAD_ALREADY_EXISTS` | 409 | The studio already has a lead for this site | `{ leadId }`: open that lead instead |
 | `CONTACT_RIGHT_HELD` | 409 | Add lead or import: another studio holds the right to contact this business (REV-225) | `{ expiresAt }`; the other studio is never named |
 | `BUSINESS_IN_COOLDOWN` | 409 | Add lead or import: a right for this business ended recently; every studio waits | `{ availableAt }` |
-| `BUSINESS_OPTED_OUT` | 409 | Add lead or import: the business, or its contact address, asked not to be contacted | — |
+| `BUSINESS_OPTED_OUT` | 409 | Add lead, import or approve: the business, or its contact address under any business, asked not to be contacted (REV-225, REV-227) | — |
 | `LEAD_NOT_FOUND` | 404 | No such lead in the studio | — |
 | `LEAD_NOT_AUDITABLE` | 409 | Audit requested for a lead not in `QUEUED`/`AUDIT_FAILED`, or it changed meanwhile | `{ status }` |
 | `AUDIT_NOT_FOUND` | 404 | No audit the studio may read | — |

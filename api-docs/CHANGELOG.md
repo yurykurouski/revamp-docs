@@ -2,6 +2,13 @@
 
 Changes to the public surface of `/api/v1`, newest first, with the Linear ticket that made each one. The format follows [Keep a Changelog](https://keepachangelog.com/); the specification version (`info.version` in `reference/openapi.yaml`) follows [SemVer](https://semver.org/). Releases before 1.0.0 were not versioned; their entries are grouped by date.
 
+## [2.3.0] — 2026-11-27
+
+### Changed
+- **An opt-out applies to every studio (REV-227).** `POST /track/unsubscribe/{token}` answers as before, but now opts the business out for all studios, stores only a SHA-256 hash of the recipient address, ends the business's contact right, moves every studio's lead for the business to `UNSUBSCRIBED` and closes their unsent campaigns.
+- `POST /outreach/{id}/approve` answers `409 BUSINESS_OPTED_OUT` when the business opted out or the lead's contact address is suppressed under any business.
+- `Lead.outreachError.code` gains `CONTACT_OPTED_OUT`.
+
 ## [2.2.0] — 2026-11-27
 
 ### Added

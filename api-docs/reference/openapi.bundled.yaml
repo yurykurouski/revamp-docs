@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Revamp SaaS API
-  version: 2.2.0
+  version: 2.3.0
   description: |
     Revamp finds local businesses with dated websites, audits each site in a real browser, has a model design a new
     home page from the site's own content, and sends the owner a personal email with the prototype **only after an
@@ -1515,7 +1515,7 @@ paths:
         '404':
           $ref: '#/components/responses/LeadNotFound'
         '409':
-          description: '`LEAD_NOT_AWAITING_APPROVAL` (not in `NEEDS_APPROVAL`), `NO_CONTACT_EMAIL` (the lead has no email) `SENDER_NOT_CONFIGURED` (the studio has no sender) or `CONTACT_RIGHT_REQUIRED` (the studio holds no active right to contact the business; `details.expiredAt` when it had one; REV-226). Nothing is written or queued'
+          description: '`LEAD_NOT_AWAITING_APPROVAL` (not in `NEEDS_APPROVAL`), `NO_CONTACT_EMAIL` (the lead has no email) `SENDER_NOT_CONFIGURED` (the studio has no sender), `BUSINESS_OPTED_OUT` (the business, or the lead''s contact address under any business, asked not to be contacted; REV-227) or `CONTACT_RIGHT_REQUIRED` (the studio holds no active right to contact the business; `details.expiredAt` when it had one; REV-226). Nothing is written or queued'
           content:
             application/json:
               schema:
@@ -2006,7 +2006,12 @@ paths:
         - Tracking
       operationId: unsubscribe
       summary: One-click unsubscribe (RFC 8058)
-      description: Lead and campaign → `UNSUBSCRIBED`. Idempotent; an unknown token changes nothing.
+      description: |
+        Lead and campaign → `UNSUBSCRIBED`. The opt-out then applies to every studio (REV-227): the business is opted
+        out, a SHA-256 hash of the recipient address is stored (never the address), the business's contact right ends,
+        every studio's lead for the business moves to `UNSUBSCRIBED` and their unsent campaigns are closed. The answer is
+        the same as before and reveals no other studio. Idempotent: a repeat completes an interrupted opt-out and
+        changes nothing else; an unknown token changes nothing.
       security: []
       requestBody:
         required: false
@@ -2701,6 +2706,7 @@ components:
               type: string
               enum:
                 - CONTACT_RIGHT_EXPIRED
+                - CONTACT_OPTED_OUT
             message:
               type: string
               maxLength: 500
