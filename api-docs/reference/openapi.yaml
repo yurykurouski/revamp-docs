@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Revamp SaaS API
-  version: 2.5.0
+  version: 2.6.0
   description: |
     Revamp finds local businesses with dated websites, audits each site in a real browser, has a model design a new
     home page from the site's own content, and sends the owner a personal email with the prototype **only after an
@@ -56,6 +56,8 @@ tags:
     description: Finding local businesses on OpenStreetMap or Google Places
   - name: Tracking
     description: Public endpoints called by email clients and by the published prototype pages
+  - name: Lots
+    description: Masked listing of open lots for every studio member (REV-233)
   - name: Admin
     description: Platform administrator only (REV-232). Platform audits of businesses no studio owns yet, and lots
 
@@ -1549,6 +1551,84 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
 
+  /lots:
+    get:
+      tags: [Lots]
+      operationId: listMaskedLots
+      summary: Open lots as a studio may see them before buying
+      description: |
+        Every studio member, viewers included (REV-233). Lists `OPEN` lots whose `releaseAt` has passed, newest first
+        (`releaseAt` descending, then `_id`). Nothing that identifies the business is returned: an item is parsed
+        with a strict allow-list schema, and a field outside it would answer `500` instead of being sent. Signals are
+        levels (`low` below one third of the need, `medium` below two thirds, else `high`), `releaseAt` is cut to
+        the minute, and the price is rounded to `LOT_PRICE_STEP_CENTS`.
+
+        A group of (`niche`, `city`, `band`) with fewer than `LOT_LISTING_MIN_GROUP` (3) listed lots is withheld.
+        Groups use the city as stored, so a differently written city hides the lot (fails safe).
+
+        Requests are limited per studio: `LOT_LISTING_RATE_LIMIT` (30) per `LOT_LISTING_RATE_WINDOW_SECONDS` (60),
+        a fixed window in Redis. The query is validated first, so a `400` uses no budget. When the limit store does
+        not answer within 500 ms the request is refused with `503 LISTINGS_UNAVAILABLE`.
+      parameters:
+        - name: niche
+          in: query
+          schema: { $ref: '#/components/schemas/Niche' }
+        - name: city
+          in: query
+          description: Case-insensitive, matched against the whole city name
+          schema: { type: string, minLength: 1, maxLength: 100 }
+        - name: band
+          in: query
+          schema: { type: string, enum: [A, B, C, D] }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        '200':
+          description: A page of masked lots
+          headers:
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data:
+                    type: object
+                    required: [items, total, page, limit]
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/MaskedLot' }
+                      total: { type: integer, description: 'Listed lots matching the filters; withheld groups are not counted' }
+                      page: { type: integer }
+                      limit: { type: integer }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '429':
+          description: '`RATE_LIMITED`: the studio used its requests for this window; `details.retryAfterSeconds`'
+          headers:
+            Retry-After: { schema: { type: integer }, description: Seconds until the window ends }
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              example:
+                success: false
+                error: { code: RATE_LIMITED, message: 'Too many requests, try again later', details: { retryAfterSeconds: 12 } }
+        '503':
+          description: '`LISTINGS_UNAVAILABLE`: the limit store (Redis) is not ready or did not answer in 500 ms; the request is refused, not let through'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
   /track/open/{token}.gif:
     get:
       tags: [Tracking]
@@ -1673,6 +1753,13 @@ paths:
               schema: { type: string }
 
 components:
+  headers:
+    RateLimitLimit:
+      description: Requests allowed per studio in the window
+      schema: { type: integer }
+    RateLimitRemaining:
+      description: Requests left in the current window
+      schema: { type: integer }
   securitySchemes:
     bearerAuth:
       type: http
@@ -1920,6 +2007,8 @@ components:
         - LOT_TRANSITION_NOT_ALLOWED
         - PLATFORM_AUDIT_NOT_FOUND
         - NO_COMPLETED_PLATFORM_AUDIT
+        - RATE_LIMITED
+        - LISTINGS_UNAVAILABLE
     ErrorResponse:
       type: object
       required: [success, error]
@@ -2172,6 +2261,29 @@ components:
         live: { type: boolean, description: 'True while the lot is `DRAFT`, `OPEN` or `RESERVED`; absent after `SOLD` or `WITHDRAWN`' }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+    MaskedLot:
+      type: object
+      description: '`IMaskedLot` in `@revamp/shared-types`. The only shape of a listed lot (strict `MaskedLotSchema`): no business, audit, name, domain, contact or exact measurement.'
+      required: [id, niche, city, band, priceCents, currency, releaseAt, signals]
+      additionalProperties: false
+      properties:
+        id: { $ref: '#/components/schemas/ObjectId' }
+        niche: { $ref: '#/components/schemas/Niche' }
+        city: { type: string, maxLength: 100 }
+        band: { type: string, enum: [A, B, C, D] }
+        priceCents: { type: integer, minimum: 0, description: Rounded to `LOT_PRICE_STEP_CENTS` }
+        currency: { type: string, pattern: '^[A-Z]{3}$', example: EUR }
+        releaseAt: { type: string, format: date-time, description: Truncated to the minute }
+        signals:
+          type: array
+          maxItems: 4
+          items:
+            type: object
+            required: [signal, level]
+            additionalProperties: false
+            properties:
+              signal: { type: string, enum: [siteEra, accessibility, standards, lcp] }
+              level: { type: string, enum: [low, medium, high] }
     Pagination:
       type: object
       required: [total, page, limit, totalPages]

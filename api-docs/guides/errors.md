@@ -126,6 +126,13 @@ Two routes answer differently on purpose: `GET /health` returns its status repor
 | `GEOCODING_UNAVAILABLE` | 502 | Nominatim failed |
 | `PLACE_NOT_FOUND` | 404 | No city at these coordinates |
 
+### Lot listings (REV-233)
+
+| Code | HTTP | When |
+| --- | --- | --- |
+| `RATE_LIMITED` | 429 | `GET /lots`: the studio used its requests for the window; wait `details.retryAfterSeconds` (also `Retry-After`) |
+| `LISTINGS_UNAVAILABLE` | 503 | `GET /lots`: the limit store did not answer; retry shortly. The request is refused, not let through |
+
 ### Platform administration (REV-232)
 
 Every `/admin/*` route answers `403 FORBIDDEN` to a user who is not a platform administrator.

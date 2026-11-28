@@ -2,6 +2,16 @@
 
 Changes to the public surface of `/api/v1`, newest first, with the Linear ticket that made each one. The format follows [Keep a Changelog](https://keepachangelog.com/); the specification version (`info.version` in `reference/openapi.yaml`) follows [SemVer](https://semver.org/). Releases before 1.0.0 were not versioned; their entries are grouped by date.
 
+## [2.6.0] — 2026-11-28
+
+### Added
+- **Masked lot listings (REV-233).** `GET /lots` for every studio member (viewers included): open lots with `releaseAt` passed, as `MaskedLot` items (`id`, `niche`, `city`, `band`, `priceCents`, `currency`, `releaseAt` to the minute, signal levels `low`/`medium`/`high`), never anything that identifies the business. Groups of (`niche`, `city`, `band`) with fewer than 3 lots are withheld. Filters `niche`, `city`, `band`, `page`, `limit` (1-50).
+- Per-studio rate limit on `GET /lots` (30 per 60 s by default): `RateLimit-Limit` and `RateLimit-Remaining` headers, `429 RATE_LIMITED` with `Retry-After` and `details.retryAfterSeconds`, and `503 LISTINGS_UNAVAILABLE` when the limit store is down (the request is refused, not let through).
+- Error codes `RATE_LIMITED`, `LISTINGS_UNAVAILABLE`.
+
+### Changed
+- Lot prices are rounded to `LOT_PRICE_STEP_CENTS` (default 500) and kept within the floor and cap, so an exact price cannot identify a business. `need`, signals and band are unchanged.
+
 ## [2.5.0] — 2026-11-28
 
 ### Added

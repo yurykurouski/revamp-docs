@@ -36,7 +36,7 @@ api-docs/
     └── generate-request-schemas.mjs
 ```
 
-The API at a glance: 45 operations on 41 paths in 11 groups (Health, Auth, Organization, Invitations, Leads, Audits, MVP, Outreach, Discovery, Tracking, Admin), 12 of them public. Every route registered in `apps/api/src/routes` is in the reference.
+The API at a glance: 46 operations on 42 paths in 12 groups (Health, Auth, Organization, Invitations, Leads, Audits, MVP, Outreach, Discovery, Tracking, Lots, Admin), 12 of them public. Every route registered in `apps/api/src/routes` is in the reference.
 
 ## Viewing the reference
 

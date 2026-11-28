@@ -1071,6 +1071,8 @@ interface IInvitation {                      // REV-207
 | `409` | `LOT_TRANSITION_NOT_ALLOWED` | `POST /admin/lots/:id/open`, `POST /admin/lots/:id/withdraw`: статус лота не допускает изменение (`open` — только из `DRAFT`) (REV-232) |
 | `404` | `PLATFORM_AUDIT_NOT_FOUND` | `GET /admin/platform-audits/:id`: аудита нет или это аудит лида студии (REV-232) |
 | `409` | `NO_COMPLETED_PLATFORM_AUDIT` | `POST /admin/lots`: у бизнеса нет завершённого аудита (REV-232) |
+| `429` | `RATE_LIMITED` | `GET /lots`: студия превысила лимит запросов, `details.retryAfterSeconds`, заголовок `Retry-After` (REV-233) |
+| `503` | `LISTINGS_UNAVAILABLE` | `GET /lots`: хранилище лимита (Redis) недоступно или не ответило за 500 мс; запрос отклоняется, а не пропускается (REV-233) |
 | `404` | `OUTBOX_NOT_FOUND` | `GET /outreach/:id/outbox`: для лида не записано ни одного письма (REV-221) |
 | `504` | `EMAIL_TEST_TIMEOUT` | `POST /outreach/:id/test`: воркеры не ответили за 30 с |
 | `502` | `EMAIL_SEND_FAILED` | `POST /outreach/:id/test`: воркер не смог собрать тестовое письмо |
@@ -1168,6 +1170,15 @@ interface IInvitation {                      // REV-207
 | `GET` | `/admin/lots` | Лоты, новые первыми: `200 { data: ILot[], pagination: { page, limit, total, totalPages } }` | `AdminLotsQuerySchema`: `status?`, `page` (≥ 1, по умолчанию 1), `limit` (1–100, по умолчанию 20) |
 
 Платформенный аудит и воркеры: сначала разворачиваются воркеры, потом API, иначе задача `platform-audit` останется без обработчика.
+
+### 5.7. Замаскированные листинги лотов (`/lots`)
+Витрина лотов для студий (REV-233): любой участник студии, включая `viewer`. Маршрут стоит за `requireAuth` и `requireWriter`; чтение разрешено всем ролям.
+
+| Метод | Эндпоинт | Описание | Body / Параметры |
+|---|---|---|---|
+| `GET` | `/lots` | Открытые лоты с `releaseAt <= now`, новые первыми (`releaseAt` убыв., затем `_id`): `200 { items: MaskedLot[], total, page, limit }`. `MaskedLot` = `{ id, niche, city, band, priceCents, currency, releaseAt (до минуты), signals: [{ signal, level: low \| medium \| high }] }`, разобран строгой `MaskedLotSchema` (лишнее поле — `500`, элемент не уходит). Группа (`niche`, `city`, `band`) с числом лотов меньше `LOT_LISTING_MIN_GROUP` (3) скрыта. Лимит на студию в Redis (фиксированное окно, `LOT_LISTING_RATE_LIMIT` 30 за `LOT_LISTING_RATE_WINDOW_SECONDS` 60): заголовки `RateLimit-Limit`, `RateLimit-Remaining`; `429 RATE_LIMITED` (`details.retryAfterSeconds`, `Retry-After`); при сбое Redis `503 LISTINGS_UNAVAILABLE` | `LotListingQuerySchema`: `niche?`, `city?` (без учёта регистра), `band?`, `page` (≥ 1), `limit` (1–50, по умолчанию 20) |
+
+Порядок middleware: проверка query, затем лимит, затем обработчик, поэтому `400` бюджет не тратит. Цена лота округляется до `LOT_PRICE_STEP_CENTS` (500 по умолчанию, REV-233), `need`, сигналы и полоса не меняются. Индекс `lots.{ status, releaseAt: -1 }` обслуживает выборку.
 
 ---
 

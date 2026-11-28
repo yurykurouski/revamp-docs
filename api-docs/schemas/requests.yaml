@@ -512,3 +512,37 @@ AdminLotsQuery:
       minimum: 1
       maximum: 100
       default: 20
+LotListingQuery:
+  type: object
+  properties:
+    niche:
+      type: string
+      enum:
+        - dental
+        - auto
+        - legal
+        - beauty
+        - construction
+        - medical
+        - restaurant
+        - fitness
+        - real_estate
+        - other
+    city:
+      type: string
+      minLength: 1
+      maxLength: 100
+    band:
+      type: string
+      enum:
+        - A
+        - B
+        - C
+        - D
+    page:
+      type: integer
+      minimum: 1
+    limit:
+      type: integer
+      minimum: 1
+      maximum: 50
