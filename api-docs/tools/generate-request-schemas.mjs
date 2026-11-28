@@ -26,7 +26,8 @@ const NAMES = [
   'CreateLeadSchema', 'GetLeadsQuerySchema', 'TriggerAuditSchema', 'GenerateMvpSchema', 'EditMvpSchema',
   'UpdateMvpTokensSchema', 'MvpVersionParamsSchema', 'ApproveOutreachSchema', 'RejectOutreachSchema',
   'TestEmailOutreachSchema', 'StartDiscoverySchema', 'ImportDiscoverySchema', 'ReverseGeocodeQuerySchema',
-  'MvpTrackEventSchema', 'StudioSenderSchema',
+  'MvpTrackEventSchema', 'StudioSenderSchema', 'CreatePlatformAuditSchema', 'CreateLotSchema', 'OpenLotSchema',
+  'AdminLotsQuerySchema',
 ];
 
 const dropOpenObjects = (node) => {

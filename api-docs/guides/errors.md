@@ -126,6 +126,20 @@ Two routes answer differently on purpose: `GET /health` returns its status repor
 | `GEOCODING_UNAVAILABLE` | 502 | Nominatim failed |
 | `PLACE_NOT_FOUND` | 404 | No city at these coordinates |
 
+### Platform administration (REV-232)
+
+Every `/admin/*` route answers `403 FORBIDDEN` to a user who is not a platform administrator.
+
+| Code | HTTP | When |
+| --- | --- | --- |
+| `PLATFORM_AUDIT_NOT_FOUND` | 404 | No platform audit with this id (a lead's audit answers the same) |
+| `NO_COMPLETED_PLATFORM_AUDIT` | 409 | `POST /admin/lots`: the business has no completed audit; request a platform audit first |
+| `LOT_NOT_PRICEABLE` | 409 | `POST /admin/lots`: the audit measured no price signal |
+| `LOT_NOT_ELIGIBLE` | 409 | `POST /admin/lots` or `/open`: the business opted out, is held by a studio or in cooldown, or has no city |
+| `LOT_ALREADY_LIVE` | 409 | `POST /admin/lots`: the business already has a `DRAFT`, `OPEN` or `RESERVED` lot |
+| `LOT_NOT_FOUND` | 404 | No lot with this id |
+| `LOT_TRANSITION_NOT_ALLOWED` | 409 | The lot's status does not allow the change (`open` needs `DRAFT`; `SOLD` and `WITHDRAWN` are final) |
+
 ## Validation errors in detail
 
 ```json

@@ -39,7 +39,7 @@
 
 ## 3. Модель данных
 
-База `revamp` содержит двенадцать коллекций: пять про лиды, одна общая `businesses` (REV-208), две про реестр контактов (`contactrights`, `suppressedaddresses`, REV-224) и четыре про аккаунты (REV-206, REV-207). Корень модели — `Lead` (бизнес — потенциальный клиент); остальные коллекции ссылаются на него полем `leadId` (тип `ObjectId`). Схемы определены один раз в `packages/db`, а API и воркеры только реэкспортируют их (REV-48).
+База `revamp` содержит тринадцать коллекций: пять про лиды, две общие (`businesses`, REV-208, и `lots`, REV-232), две про реестр контактов (`contactrights`, `suppressedaddresses`, REV-224) и четыре про аккаунты (REV-206, REV-207). Корень модели — `Lead` (бизнес — потенциальный клиент); остальные коллекции ссылаются на него полем `leadId` (тип `ObjectId`). Схемы определены один раз в `packages/db`, а API и воркеры только реэкспортируют их (REV-48).
 
 | Коллекция (Mongo) | Модель | Что хранит | Почему отдельная коллекция |
 | --- | --- | --- | --- |
@@ -51,6 +51,7 @@
 | `analyticsevents` | `AnalyticsEvent` | Открытия, клики, время на демо, отписки | Растут без границы, поэтому не встроены в лид |
 | `contactrights` | `ContactRight` | Право студии связаться с бизнесом на срок, с периодом охлаждения после (REV-224) | Общий реестр всех студий; история прав не теряется, а действующее держит бизнес (`businesses.contactHold`) |
 | `suppressedaddresses` | `SuppressedAddress` | SHA-256 адресов, отказавшихся от писем (REV-224) | Блок-лист для всех студий без открытых адресов |
+| `lots` | `Lot` | Лот: цена и полоса аудита одного бизнеса, который платформа предлагает студиям (REV-232) | Принадлежит платформе, а не студии; свой жизненный цикл `DRAFT` → `OPEN` → `RESERVED` → `SOLD` / `WITHDRAWN`; не больше одного живого лота на бизнес |
 | `organizations` | `Organization` | Студия (арендатор) | Корень аккаунтов (REV-206) |
 | `users` | `User` | Пользователь: e-mail, хэш пароля | Один аккаунт на e-mail на всю платформу, студий может быть несколько |
 | `memberships` | `Membership` | Членство пользователя в студии с ролью | Связь «многие ко многим» между `users` и `organizations` |
@@ -58,7 +59,8 @@
 
 **Связи** (все — по ссылке на `_id`, без проверки внешнего ключа на стороне базы):
 
-- `Lead` 1 — N `Audit` (`Audit.leadId`): повторный аудит добавляет новый документ.
+- `Lead` 1 — N `Audit` (`Audit.leadId`): повторный аудит добавляет новый документ. У платформенного аудита (REV-232) `leadId` нет: его держит только `Audit.businessId`.
+- `Business` 1 — N `Lot` (`Lot.businessId`, живой лот не больше одного); `Lot.auditId` указывает на `COMPLETED`-аудит, по которому назначена цена.
 - `Lead` 1 — 0..1 `MvpProject` (`MvpProject.leadId`, уникальный индекс, REV-201); `MvpProject.auditId` указывает на аудит, по которому он создан.
 - `Lead` 1 — 0..1 `EmailCampaign` (`EmailCampaign.leadId`, уникальный индекс, REV-201); необязательные `auditId` и `mvpProjectId`.
 - `Lead`, `EmailCampaign`, `MvpProject` 1 — N `AnalyticsEvent` (все три поля необязательны: событие с неизвестным токеном тоже записывается).
@@ -103,7 +105,7 @@
 
 | Поле | Тип | Обяз. | ПДн | Ограничения и смысл |
 | --- | --- | --- | --- | --- |
-| `leadId` | ObjectId → `leads` | да |  | Внешний ключ на лида, который запустил аудит |
+| `leadId` | ObjectId → `leads` |  |  | Внешний ключ на лида, который запустил аудит. Нет у платформенного аудита (REV-232): его запросил администратор платформы для бизнеса, которого ещё не добавила ни одна студия. Позже Add lead студии берёт такой `COMPLETED`-аудит без второго |
 | `businessId` | ObjectId → `businesses` |  |  | Общий бизнес, который измерил аудит (REV-208): `COMPLETED`-аудит читают лиды всех студий этого бизнеса |
 | `status` | String (enum) |  |  | `QUEUED`, `PROCESSING`, `COMPLETED`, `FAILED`; по умолчанию `QUEUED` |
 | `scores` | вложенный объект |  |  | `total`, `design`, `accessibility`, `performance`, `standards`, каждое 0–100; `total` по умолчанию 0; неизмеренная сторона не заполняется заглушкой (REV-100) |
@@ -248,6 +250,28 @@
 | --- | --- | --- | --- | --- |
 | `hash` | String | да |  | SHA-256 адреса после `trim().toLowerCase()` (`hashAddress`), 64 шестнадцатеричных знака, уникален. Открытый адрес не хранится; право не выдаётся лиду, чей контактный адрес в списке, под любым бизнесом |
 
+### 4.15. `lots` — лот платформы (REV-232)
+
+Цена и полоса приходят из `priceFromAudit` (spec §3.7, REV-231), а не из модели. Лот принадлежит платформе: поля `tenantId` у него нет, доступ только через маршруты `/admin`.
+
+| Поле | Тип | Обяз. | ПДн | Ограничения и смысл |
+| --- | --- | --- | --- | --- |
+| `businessId` | ObjectId → `businesses` | да |  | Бизнес, который предлагается |
+| `auditId` | ObjectId → `audits` | да |  | `COMPLETED`-аудит, по которому назначена цена (лида студии или платформенный) |
+| `niche` | String (enum) | да |  | Те же значения, что у `businesses.niche` |
+| `city` | String | да |  | Город, до 100 знаков; лот без города не создаётся |
+| `priceCents` | Number | да |  | Цена в минимальных единицах валюты, не меньше 0 |
+| `currency` | String | да |  | Код валюты, верхний регистр |
+| `band` | String (enum) | да |  | Полоса аудита `A`, `B`, `C`, `D` (`A` — самое сильное основание для редизайна); считается из `need` (`lotBandFromNeed`) |
+| `need` | Number | да |  | Потребность в редизайне, от 0 до 1 |
+| `priceSignals` | [объект] |  |  | Измеренные сигналы цены, по умолчанию пустой: `signal` (String), `value`, `need`, `weight` (Number), все обязательны; поддокументы без `_id` |
+| `status` | String (enum) |  |  | `DRAFT`, `OPEN`, `RESERVED`, `SOLD`, `WITHDRAWN`; по умолчанию `DRAFT`. Переходы задаёт `LOT_TRANSITIONS`: `DRAFT` → `OPEN` / `WITHDRAWN`; `OPEN` → `RESERVED` / `WITHDRAWN`; `RESERVED` → `OPEN` / `SOLD` / `WITHDRAWN`; `SOLD` и `WITHDRAWN` конечные. Каждая запись статуса идёт атомарным фильтром `status: { $in: lotStatusesInto(to) }` |
+| `releaseAt` | Date |  |  | Когда лот открыт студиям; администратор может задать в `POST /admin/lots/{id}/open`, иначе момент открытия |
+| `withdrawnAt` | Date |  |  | Когда лот снят |
+| `withdrawReason` | String (enum) |  |  | `admin` (снял администратор), `claimed_by_studio` (студия сама добавила бизнес через Add lead или импорт), `opted_out` (бизнес отказался от писем) |
+| `live` | Boolean |  |  | `true`, пока лот может меняться (`DRAFT`, `OPEN`, `RESERVED`); снимается при `SOLD` и `WITHDRAWN`. Держит частичный уникальный индекс: не больше одного живого лота на бизнес |
+| `createdAt`, `updatedAt` | Date |  |  | Mongoose-метки времени |
+
 ### 4.8. `organizations` — студия
 
 | Поле | Тип | Обяз. | ПДн | Ограничения и смысл |
@@ -291,6 +315,8 @@ erDiagram
     Lead ||--o{ Audit : "leadId"
     Business ||--o{ Lead : "businessId (unique с tenantId)"
     Business ||--o{ Audit : "businessId"
+    Business ||--o{ Lot : "businessId (живой лот один)"
+    Audit ||--o{ Lot : "auditId"
     Organization ||--o{ Lead : "tenantId"
     Lead ||--o| MvpProject : "leadId (unique)"
     Lead ||--o| EmailCampaign : "leadId (unique)"
@@ -333,6 +359,9 @@ erDiagram
 | `contactrights` | `{ tenantId: 1, businessId: 1, expiresAt: -1 }` | составной | Действующее право студии на бизнес (`findActiveContactRight`): одобрение и отправка (REV-226) |
 | `contactrights` | `{ businessId: 1, expiresAt: -1 }`, `{ leadId: 1 }` | составной, однополевой | История прав бизнеса и право лида (дашборд, REV-228) |
 | `suppressedaddresses` | `{ hash: 1 }` | **уникальный** | Проверка адреса при выдаче права и одобрении; один хэш на адрес |
+| `lots` | `{ businessId: 1 }` с условием `live: true` | **уникальный, частичный** | У бизнеса не больше одного живого лота (`DRAFT`, `OPEN`, `RESERVED`); второй `POST /admin/lots` — `409 LOT_ALREADY_LIVE`, в том числе при гонке. Поле `live` снимается у `SOLD` и `WITHDRAWN`, поэтому снятый лот не мешает новому |
+| `lots` | `{ status: 1, niche: 1, city: 1, band: 1 }` | составной | Список `GET /admin/lots` по статусу и будущая витрина студий по нише, городу и полосе (REV-233) |
+| `lots` | `{ auditId: 1 }` | однополевой | Лоты аудита |
 | `emailcampaigns` | `{ trackingToken: 1 }` | **уникальный** | Горячий путь: каждое открытие письма, клик и отписка ищут кампанию по токену (`/track/…`, публичные адреса). Уникальность не даёт двум письмам один токен |
 
 Индексы, для которых я **не нашёл запроса** в текущем коде:
@@ -354,8 +383,8 @@ erDiagram
 | Вид | Что и где |
 | --- | --- |
 | Первичный ключ | `_id` (`ObjectId`) в каждой коллекции; база создаёт уникальный индекс по нему сама |
-| Внешние ключи | `Audit.leadId`, `MvpProject.leadId` / `auditId`, `EmailCampaign.leadId` / `auditId` / `mvpProjectId`, `AnalyticsEvent.leadId` / `campaignId` / `mvpProjectId`, `Membership.userId` / `organizationId`, `Invitation.organizationId` / `invitedBy`. Тип `ObjectId` с `ref` в Mongoose; **база их не проверяет и каскадного удаления нет** |
-| Уникальность | `businesses.domain` и пара `leads.{tenantId, businessId}` (REV-208), `users.email`, пара `memberships.{userId, organizationId}` (REV-206), `invitations.tokenHash` (REV-207), `MvpProject.leadId`, `EmailCampaign.leadId` (один к одному с лидом, REV-201), `MvpProject.previewSlug`, `EmailCampaign.trackingToken` |
+| Внешние ключи | `Audit.leadId`, `MvpProject.leadId` / `auditId`, `EmailCampaign.leadId` / `auditId` / `mvpProjectId`, `AnalyticsEvent.leadId` / `campaignId` / `mvpProjectId`, `Membership.userId` / `organizationId`, `Invitation.organizationId` / `invitedBy`, `Lot.businessId` / `auditId`. Тип `ObjectId` с `ref` в Mongoose; **база их не проверяет и каскадного удаления нет** |
+| Уникальность | `lots.businessId` среди живых лотов (частичный индекс по `live`, REV-232), `businesses.domain` и пара `leads.{tenantId, businessId}` (REV-208), `users.email`, пара `memberships.{userId, organizationId}` (REV-206), `invitations.tokenHash` (REV-207), `MvpProject.leadId`, `EmailCampaign.leadId` (один к одному с лидом, REV-201), `MvpProject.previewSlug`, `EmailCampaign.trackingToken` |
 | Обязательность | `required` в схемах: для `Lead` — `businessName`, `originalUrl`, `domain`; для `EmailCampaign` — `leadId`, `senderEmail`, `recipientEmail`, `subject`, `bodyHtml`, `trackingToken` (полный список — в словаре) |
 | Допустимые значения | `enum` у `niche`, `source`, `status` (в трёх коллекциях), `operatorLocale`, `siteComplexity`, `eventType`, `impact` нарушения доступности, `measurementErrors.measurement` |
 | Диапазоны | `totalScore` и все `scores.*` от 0 до 100; `scrollDepthPercent` 0–100; `dwellTimeSeconds` ≥ 0; `businessName`, `city`, `ownerName` ≤ 100 знаков, `contactPhone` ≤ 30 |

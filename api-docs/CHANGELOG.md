@@ -2,6 +2,17 @@
 
 Changes to the public surface of `/api/v1`, newest first, with the Linear ticket that made each one. The format follows [Keep a Changelog](https://keepachangelog.com/); the specification version (`info.version` in `reference/openapi.yaml`) follows [SemVer](https://semver.org/). Releases before 1.0.0 were not versioned; their entries are grouped by date.
 
+## [2.5.0] — 2026-11-28
+
+### Added
+- **Platform administration (REV-232).** `/admin/*` routes for a platform administrator (an email in `PLATFORM_ADMIN_EMAILS`; anyone else gets `403 FORBIDDEN`): `POST /admin/platform-audits` (`201` queued, `200` an existing audit, `503 AUDIT_QUEUE_UNAVAILABLE`), `GET /admin/platform-audits/{id}`, `POST /admin/lots`, `GET /admin/lots`, `POST /admin/lots/{id}/open`, `POST /admin/lots/{id}/withdraw`. New schemas `Lot`, `LotStatus`, `PlatformAudit`, `PlatformAuditRequest`.
+- `GET /auth/me` returns `platformAdmin: boolean`.
+- Error codes `LOT_NOT_FOUND`, `LOT_NOT_ELIGIBLE`, `LOT_ALREADY_LIVE`, `LOT_NOT_PRICEABLE`, `LOT_TRANSITION_NOT_ALLOWED`, `PLATFORM_AUDIT_NOT_FOUND`, `NO_COMPLETED_PLATFORM_AUDIT`.
+
+### Changed
+- `POST /leads` and discovery import of a business with a `DRAFT` or `OPEN` lot withdraw the lot in the same transaction (reason `claimed_by_studio`); the response does not mention it. A `RESERVED` lot is left as it is. An opt-out withdraws every live lot (reason `opted_out`).
+- `Audit.leadId` is optional: a platform audit has none. A later Add lead of the business reuses its `COMPLETED` platform audit (the lead is created `AUDITED`).
+
 ## [2.4.0] — 2026-11-28
 
 ### Added

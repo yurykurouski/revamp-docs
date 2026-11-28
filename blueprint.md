@@ -253,6 +253,8 @@ $$\text{Total Score} = 0.35 \times S_{\text{Design/UX}} + 0.25 \times S_{\text{P
 
 Каждый критерий нормализуется от 0 до 100. **Частичная оценка (REV-100):** если детерминированное измерение не удалось (производительность, доступность или стандарты), его критерий не заполняется ни нулём, ни подставным значением, а исключается из формулы; веса оставшихся критериев масштабируются до суммы 1 (например, без производительности: $\text{Total} = (0.35 S_{D} + 0.20 S_{A} + 0.20 S_{S}) / 0.75$). Причина сохраняется в `Audit.measurementErrors`, дашборд показывает её на шаге «Аудит», а письмо не упоминает неизмеренную метрику. Шаблонная критика дизайна (сбой Vision-модели) тоже считается неизмеренным критерием `design` (REV-101); если не измерен ни один критерий, аудит завершается ошибкой.
 
+**Платформенный аудит (REV-232).** Администратор платформы может измерить сайт бизнеса, которого ещё не добавила ни одна студия (`POST /admin/platform-audits`, §5.6). Это та же детерминированная проверка в той же `audit-queue`, но под именем задачи `platform-audit` и без лида: документ `Audit` создаётся без `leadId`, а лид не создаётся и не двигается; генерация MVP не ставится. Позже Add lead студии на этот сайт берёт `COMPLETED` платформенный аудит: лид создаётся сразу в `AUDITED`, второго аудита нет (§4, п. 6). Воркер пишет только `Audit` и события `token_usage` без студии (`metadata.auditId`, `metadata.businessId`). Аудит в `QUEUED` или `PROCESSING` старше 30 минут считается мёртвым: следующий запрос администратора помечает его `FAILED` и ставит новый.
+
 При оценке ниже 60 система генерирует конкретные продающие тезисы для холодного письма (например: *"Ваш мобильный сайт теряет до 45% клиентов из-за медленного LCP 4.8s и нечитаемого шрифта на смартфонах"*).
 
 ---
@@ -922,7 +924,7 @@ interface IBusiness {
   optedOutAt?: Date;    // отказ бизнеса от писем: блокирует все студии (REV-224, REV-227)
 }
 ```
-* Бизнес пишется upsert-ом с фильтром `{ domain }` (повтор один раз после E11000, как в REV-201); лид хранит копии полей идентичности, аудит — `leadId` лида, который его запустил, и `businessId`.
+* Бизнес пишется upsert-ом с фильтром `{ domain }` (повтор один раз после E11000, как в REV-201); лид хранит копии полей идентичности, аудит — `leadId` лида, который его запустил (у платформенного аудита, REV-232, `leadId` нет), и `businessId`.
 * Чтение аудита лида (`findAuditForLead`): свой самый новый аудит, иначе самый новый `COMPLETED` аудит бизнеса. Проверка id аудита из запроса — `auditBelongsToLead`.
 * Индексы: уникальный `businesses.domain`; частичный уникальный `leads.{ tenantId, businessId }` и `leads.businessId`; составной `audits.{ businessId, status, createdAt: -1 }`. Аудит после `COMPLETED` только для чтения: воркеры публикации ничего не пишут в него (баннер сравнения хранится на лиде и в MVP). `POST /mvp/generate` несёт `leadId`; id аудита без `leadId` отклоняется, если аудит читает больше одного лида; `GET /mvp/:id` не ищет по id аудита.
 
@@ -945,6 +947,29 @@ interface ISuppressedAddress { _id: Types.ObjectId; hash: string; }   // SHA-256
 * Действующее право: `findActiveContactRight` (`grantedAt <= now < expiresAt`, без `endedAt`). `endContactRight` завершает право досрочно и сдвигает начало охлаждения (для отказа, REV-227).
 * Существующие лиды: `npm run migrate:contact-rights --workspace=@revamp/api` (пробный прогон, `-- --apply`): самый старый открытый лид студии на бизнес получает право с момента миграции (закрытые `REJECTED`, `AUDIT_FAILED` — никогда), лиды других студий перечисляются как конфликты без изменений; бизнес с лидом `UNSUBSCRIBED` получает `optedOutAt` и хэш адреса. API и воркеры предупреждают при старте, пока миграция не прошла (`checkContactRights`).
 * Выдача при добавлении лида и импорте (REV-225): `addLeadToBusiness` с `contactRight` берёт право в транзакции добавления; отказ откатывает лид, аудит и новый бизнес. Кандидаты поиска несут `unavailable` (`contactAvailabilityByDomain`), импорт сообщает `right_held` / `cooldown` / `opted_out`. Проверка при одобрении и отправке, отказ на все студии и дашборд — REV-226 … REV-228.
+
+#### 6b. `lots` — лоты платформы (REV-232, эпик E3)
+```typescript
+interface ILot {
+  _id: Types.ObjectId;
+  businessId: Types.ObjectId;     // ref Business
+  auditId: Types.ObjectId;        // ref Audit: COMPLETED-аудит (лида студии или платформенный), по которому назначена цена
+  niche: NicheType; city: string; // копии бизнеса; лот без города не создаётся
+  priceCents: number; currency: string;
+  band: 'A' | 'B' | 'C' | 'D';    // lotBandFromNeed(need)
+  need: number;                   // 0..1
+  priceSignals: { signal: string; value: number; need: number; weight: number }[];
+  status: 'DRAFT' | 'OPEN' | 'RESERVED' | 'SOLD' | 'WITHDRAWN';
+  releaseAt?: Date; withdrawnAt?: Date;
+  withdrawReason?: 'admin' | 'claimed_by_studio' | 'opted_out';
+  live?: boolean;                 // true у DRAFT, OPEN, RESERVED; снимается у SOLD и WITHDRAWN
+}
+```
+* Лот принадлежит платформе: у него нет `tenantId`, студии видят лоты только через будущую витрину (REV-233). Цена и полоса считаются кодом (`priceFromAudit`, spec §3.7), не моделью.
+* Индексы: частичный уникальный `{ businessId }` при `live: true` (не больше одного живого лота на бизнес), `{ status, niche, city, band }`, `{ auditId }`.
+* Переходы задаёт `LOT_TRANSITIONS` (`@revamp/validation`): `DRAFT` → `OPEN` / `WITHDRAWN`; `OPEN` → `RESERVED` / `WITHDRAWN`; `RESERVED` → `OPEN` / `SOLD` / `WITHDRAWN`; `SOLD` и `WITHDRAWN` конечные. Каждая запись статуса — атомарный фильтр `status: { $in: lotStatusesInto(to) }` (`transitionLot`, `@revamp/db`).
+* `createLot` проверяет допустимость записью в бизнес в той же транзакции, что и вставка: бизнес не отказался, нет действующего права и охлаждения, город задан. Одновременная выдача права (`grantContactRight`) тоже пишет бизнес, поэтому лот не появляется на бизнесе, который студия только что взяла.
+* Add lead и импорт студии на бизнес с лотом `DRAFT` или `OPEN` выигрывают: право выдаётся, лот становится `WITHDRAWN` (`claimed_by_studio`) в той же транзакции, ответ о лоте не говорит (`withdrawLots`). Лот `RESERVED` не трогается (REV-234). Отказ бизнеса от писем (`recordBusinessOptOut`) снимает все живые лоты (`DRAFT`, `OPEN`, `RESERVED`) с причиной `opted_out`; снятый `RESERVED` лот должен вернуть деньги покупателю (REV-234).
 
 #### 7. `organizations`, `users`, `memberships` (REV-206)
 ```typescript
@@ -1004,7 +1029,7 @@ interface IInvitation {                      // REV-207
 | `500` | `INTERNAL` | Непредвиденная ошибка; в production `message` = `Internal server error` |
 | `401` | `UNAUTHENTICATED` | Нет токена `Authorization: Bearer`, токен неверный или просрочен, либо пользователь, членство или организация из токена больше не существуют (`GET /auth/me`) (REV-206) |
 | `401` | `INVALID_CREDENTIALS` | `POST /auth/login`: неверный пароль или неизвестный e-mail; ответ один и тот же (REV-206) |
-| `403` | `FORBIDDEN` | Роль не позволяет действие: запись у `viewer`, любой запрос `/organization/*` у не-владельца (REV-207) |
+| `403` | `FORBIDDEN` | Роль не позволяет действие: запись у `viewer`, любой запрос `/organization/*` у не-владельца (REV-207), любой запрос `/admin/*` у пользователя не из `PLATFORM_ADMIN_EMAILS` (REV-232) |
 | `409` | `ALREADY_MEMBER` | Приглашение на адрес, который уже принадлежит участнику, или принятие приглашения участником студии (REV-207) |
 | `409` | `LAST_OWNER` | Понижение или удаление последнего владельца студии (REV-207) |
 | `404` | `MEMBER_NOT_FOUND` | В студии нет такого участника (REV-207) |
@@ -1039,6 +1064,13 @@ interface IInvitation {                      // REV-207
 | `409` | `NO_CONTACT_EMAIL` | `POST /outreach/:id/approve`: у лида нет e-mail |
 | `409` | `SENDER_NOT_CONFIGURED` | `POST /outreach/:id/approve`, `POST /outreach/:id/test`: у студии нет отправителя (REV-221) |
 | `409` | `CONTACT_RIGHT_REQUIRED` | `POST /outreach/:id/approve`: у студии нет действующего права на контакт с бизнесом лида, `details.expiredAt` — когда закончилось последнее (REV-226) |
+| `404` | `LOT_NOT_FOUND` | `POST /admin/lots/:id/open`, `POST /admin/lots/:id/withdraw`: лота нет (REV-232) |
+| `409` | `LOT_NOT_ELIGIBLE` | `POST /admin/lots`, `POST /admin/lots/:id/open`: бизнес отказался от писем, удерживается студией или в охлаждении, либо у него нет города (REV-232) |
+| `409` | `LOT_ALREADY_LIVE` | `POST /admin/lots`: у бизнеса уже есть живой лот (`DRAFT`, `OPEN`, `RESERVED`) (REV-232) |
+| `409` | `LOT_NOT_PRICEABLE` | `POST /admin/lots`: аудит не измерил ни одного сигнала цены (REV-232) |
+| `409` | `LOT_TRANSITION_NOT_ALLOWED` | `POST /admin/lots/:id/open`, `POST /admin/lots/:id/withdraw`: статус лота не допускает изменение (`open` — только из `DRAFT`) (REV-232) |
+| `404` | `PLATFORM_AUDIT_NOT_FOUND` | `GET /admin/platform-audits/:id`: аудита нет или это аудит лида студии (REV-232) |
+| `409` | `NO_COMPLETED_PLATFORM_AUDIT` | `POST /admin/lots`: у бизнеса нет завершённого аудита (REV-232) |
 | `404` | `OUTBOX_NOT_FOUND` | `GET /outreach/:id/outbox`: для лида не записано ни одного письма (REV-221) |
 | `504` | `EMAIL_TEST_TIMEOUT` | `POST /outreach/:id/test`: воркеры не ответили за 30 с |
 | `502` | `EMAIL_SEND_FAILED` | `POST /outreach/:id/test`: воркер не смог собрать тестовое письмо |
@@ -1064,7 +1096,7 @@ interface IInvitation {                      // REV-207
 | `POST` | `/invitations/:token/join` | **Публичный** (REV-207): приглашённый, у которого уже есть аккаунт (в том числе удалённый из студии, которому вход не даёт студии), присоединяется по паролю аккаунта с приглашённым адресом. `200` с сессией приглашённой студии; `401 INVALID_CREDENTIALS` (неверный пароль и неизвестный адрес не различаются), `404`/`410`/`409` коды приглашения | `JoinInvitationSchema`: `{ password }` |
 | `POST` | `/invitations/:token/accept` | Вошедший пользователь принимает приглашение; адрес должен совпасть, роль любая. `200` с сессией приглашённой студии; `403 INVITATION_EMAIL_MISMATCH`, `409 ALREADY_MEMBER`, `410 INVITATION_EXPIRED` | — |
 | `POST` | `/auth/login` | **Публичный** (REV-206). Вход; `200` в том же виде, что регистрация; `401 INVALID_CREDENTIALS`; `401 UNAUTHENTICATED`, если пароль верный, но у пользователя нет членства или организации | `LoginSchema`: `{ email, password }` |
-| `GET` | `/auth/me` | Текущий пользователь, организация и роль из базы, без токена в ответе; `401 UNAUTHENTICATED` | — |
+| `GET` | `/auth/me` | Текущий пользователь, организация и роль из базы, без токена в ответе, и `platformAdmin: boolean` (e-mail в `PLATFORM_ADMIN_EMAILS`, REV-232); `401 UNAUTHENTICATED` | — |
 | `POST` | `/leads` | Создать лид для студии вызывающего (REV-208): общий `Business` сайта находится или создаётся; если у него уже есть `COMPLETED`-аудит, лид создаётся сразу `AUDITED` с этим аудитом и в очередь ставится генерация MVP, иначе лид и первый аудит (`QUEUED`) создаются в одной транзакции и аудит ставится в очередь; `409 LEAD_ALREADY_EXISTS` (`details.leadId`), если у студии уже есть лид на этот сайт; в той же транзакции студия получает право на контакт (`grantContactRight`, REV-225), иначе `409 CONTACT_RIGHT_HELD` / `BUSINESS_IN_COOLDOWN` / `BUSINESS_OPTED_OUT` и ничего не создаётся; `201` несёт `data.contactRight.expiresAt`; неудачная постановка аудита право не снимает (лид `AUDIT_FAILED`, повтор аудита продолжает его); если очередь не ответила за 5 с — лид `AUDIT_FAILED` и `503 AUDIT_QUEUE_UNAVAILABLE` (REV-202) | `CreateLeadSchema`: `{ businessName, originalUrl, contactEmail?, niche, city?, contactPhone?, ownerName?, operatorLocale? }` (без e-mail аудит берет его с сайта, REV-45) |
 | `GET` | `/leads` | Список лидов с фильтрами и пагинацией (`pagination.total`); каждый лид несет краткую сводку полноты MVP (`completeness`) и право студии на контакт (`contactRight`: `{ expiresAt, active, endedAt?, endReason? }` или `null` — самое новое право студии на бизнес лида, одним запросом на страницу через `scope.rights`; чужое право не возвращается, REV-228). `search` ищет подстроку без учета регистра (спецсимволы экранируются). Дашборд загружает все страницы по `limit=100` (REV-43) | `?status=&niche=&complexity=&search=&page=&limit=` (`limit` ≤ 100, по умолчанию 20) |
 | `GET` | `/leads/stats` | Счетчики по всей воронке без учета фильтров списка → `{ total, byStatus }` (`ILeadStats`); источник KPI-карточек дашборда (REV-43) | — |
@@ -1122,6 +1154,20 @@ interface IInvitation {                      // REV-207
 **Завершение работы API (REV-66):** по `SIGTERM`/`SIGINT` сервер перестаёт принимать запросы и сразу закрывает простаивающие keep-alive сокеты; незавершённые запросы получают 5 с, после чего соединения закрываются принудительно. Затем закрываются очереди BullMQ (и `QueueEvents` тестовых писем и изменений MVP, REV-85), соединение Redis и MongoDB, процесс завершается с кодом `0`. Если шаг зависает, через 8 с (меньше 10 с по умолчанию у `docker stop`) процесс завершается с кодом `1`.
 
 **CORS для `/track/*` (REV-52):** кроме `CORS_ORIGIN` дашборда, разрешены origin хранилища MVP (`S3_ENDPOINT` локально) и `https://{PREVIEW_DOMAIN}`. `navigator.sendBeacon` всегда отправляет запрос с `credentials: include`, поэтому ответ содержит `Access-Control-Allow-Credentials: true` при явном списке origin (не `*`). Остальные маршруты API доступны только `CORS_ORIGIN`.
+
+### 5.6. Платформенный администратор и лоты (`/admin`)
+Платформенный администратор (REV-232) — вошедший пользователь, чей e-mail есть в `PLATFORM_ADMIN_EMAILS` (через запятую, без пробелов по краям, без учёта регистра; пустое значение — администраторов нет). Все маршруты `/admin/*` стоят за `requireAuth` и `requirePlatformAdmin`: остальным `403 FORBIDDEN`. Они работают только с записями платформы (общие аудиты, лоты), не с лидами студий.
+
+| Метод | Эндпоинт | Описание | Body / Параметры |
+|---|---|---|---|
+| `POST` | `/admin/platform-audits` | Измерить сайт без лида. Бизнес находится или создаётся по домену. `201 { auditId, businessId, status, queued: true }` — задача `platform-audit` поставлена; `200` с `queued: false` — вернулся готовый `COMPLETED`-аудит или ещё идущий свежий; `503 AUDIT_QUEUE_UNAVAILABLE` (аудит помечен `FAILED`, `details.auditId`) | `CreatePlatformAuditSchema`: `{ url, businessName, niche, city }` |
+| `GET` | `/admin/platform-audits/:id` | `{ auditId, businessId, status, scores, measurementErrors, completedAt, errorMessage? }`; `404 PLATFORM_AUDIT_NOT_FOUND` (и для аудита лида студии) | — |
+| `POST` | `/admin/lots` | Лот `DRAFT` из самого нового `COMPLETED`-аудита бизнеса: `201` с лотом. `409 NO_COMPLETED_PLATFORM_AUDIT`, `LOT_NOT_PRICEABLE`, `LOT_NOT_ELIGIBLE`, `LOT_ALREADY_LIVE` | `CreateLotSchema`: `{ businessId }` |
+| `POST` | `/admin/lots/:id/open` | `DRAFT` → `OPEN`; `releaseAt` по умолчанию сейчас. `200` с лотом; `404 LOT_NOT_FOUND`; `409 LOT_TRANSITION_NOT_ALLOWED`, `LOT_NOT_ELIGIBLE` (бизнес отказался или взят студией после создания лота) | `OpenLotSchema`: `{ releaseAt?: ISO-дата }` |
+| `POST` | `/admin/lots/:id/withdraw` | Любой живой лот → `WITHDRAWN`, `withdrawReason: admin`. `200` с лотом; `404 LOT_NOT_FOUND`; `409 LOT_TRANSITION_NOT_ALLOWED` | — |
+| `GET` | `/admin/lots` | Лоты, новые первыми: `200 { data: ILot[], pagination: { page, limit, total, totalPages } }` | `AdminLotsQuerySchema`: `status?`, `page` (≥ 1, по умолчанию 1), `limit` (1–100, по умолчанию 20) |
+
+Платформенный аудит и воркеры: сначала разворачиваются воркеры, потом API, иначе задача `platform-audit` останется без обработчика.
 
 ---
 
@@ -1185,6 +1231,7 @@ graph LR
    * Concurrency: `2` (Playwright ресурсоемок).
    * Sandbox: каждый запуск в отдельном контексте браузера, таймаут навигации 25 с, перезапуск браузера каждые 20 задач.
    * Ретраи: 3 попытки, экспоненциальный откат от 3 с. Постоянные ошибки навигации (`ERR_NAME_NOT_RESOLVED`, `ERR_CERT_*`, `ERR_INVALID_URL`) завершаются `UnrecoverableError` без повтора. После последней попытки лид переходит из `AUDITING` в `AUDIT_FAILED` с причиной в `auditError` (`audit-failure.ts`, REV-44). Лиды, застрявшие до исправления, переводятся скриптом `backfill:stuck-audits`.
+   * Вторая задача очереди — `platform-audit` (REV-232, `AUDIT_JOB_NAMES.PLATFORM`; лидовая остаётся `audit-website`): данные `{ auditId, businessId, url, niche }`, без `tenantId` (единственная такая задача: пишет только общий `Audit` и события `token_usage` без студии), `jobId` = `platform-audit-<auditId>`. Тот же обработчик измерения и те же ретраи; `FAILED` пишется только после последней попытки. Лид не двигается, задача в `ai-gen-queue` не ставится.
    * По завершении ставит задачу в `ai-gen-queue`. При старте воркеров лиды, застрявшие в `AUDITED` с завершенным аудитом, ставятся в очередь повторно (`recoverStalledAuditedLeads`, `apps/workers/src/services/stalled-lead-recovery.ts`): только лиды со студией (`tenantId`) и без тега `demo-seed` (фильтр `stalledAuditedLeadFilter` из `@revamp/db`, REV-204), чтобы засеянная база не запускала платные вызовы модели. Generate MVP вручную на демо-лиде по-прежнему работает.
 3. **`ai-gen-queue` Worker:**
    * Concurrency: `5`. Ретраи: 3 попытки, экспоненциальный откат от 5 с; внутри задачи — генератор страницы (Агент 2 в `AGENTS.md`): до 2 обращений к модели (температура 0.7, затем 0.3 с причинами отклонения). `not_configured` и `invalid_page` — `MvpPageUnavailableError` (`UnrecoverableError`), без ретраев; `call_failed` повторяется ретраями задачи. Запасной страницы нет.

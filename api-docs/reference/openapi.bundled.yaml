@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Revamp SaaS API
-  version: 2.4.0
+  version: 2.5.0
   description: |
     Revamp finds local businesses with dated websites, audits each site in a real browser, has a model design a new
     home page from the site's own content, and sends the owner a personal email with the prototype **only after an
@@ -56,6 +56,8 @@ tags:
     description: Finding local businesses on OpenStreetMap or Google Places
   - name: Tracking
     description: Public endpoints called by email clients and by the published prototype pages
+  - name: Admin
+    description: Platform administrator only (REV-232). Platform audits of businesses no studio owns yet, and lots
 paths:
   /health:
     get:
@@ -1903,6 +1905,323 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /admin/platform-audits:
+    post:
+      tags:
+        - Admin
+      operationId: requestPlatformAudit
+      summary: Audit a business no studio owns yet
+      description: |
+        Platform administrators only (`PLATFORM_ADMIN_EMAILS`, REV-232). The business is found or created by the
+        domain of `url`. A `COMPLETED` audit of the business, or a platform audit still waiting, is returned as it
+        is (`200`, `queued: false`) and nothing is queued; otherwise a `platform-audit` job is queued on
+        `audit-queue` (`201`). The audit has no `leadId`, no lead is created and no generation job is queued. A
+        `QUEUED` or `PROCESSING` platform audit older than 30 minutes is failed and replaced by the new request.
+        If the job cannot be queued within 5 s the audit is marked `FAILED` and the answer is `503`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePlatformAudit'
+            example:
+              url: https://smile-dental.example
+              businessName: Smile Dental Clinic
+              niche: dental
+              city: Vilnius
+      responses:
+        '200':
+          description: An existing audit is returned; nothing was queued
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                properties:
+                  success:
+                    type: boolean
+                    enum:
+                      - true
+                  data:
+                    $ref: '#/components/schemas/PlatformAuditRequest'
+        '201':
+          description: A `platform-audit` job was queued
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                properties:
+                  success:
+                    type: boolean
+                    enum:
+                      - true
+                  data:
+                    $ref: '#/components/schemas/PlatformAuditRequest'
+              example:
+                success: true
+                data:
+                  auditId: 6740a3449d4e5a0012ab35c0
+                  businessId: 6740a1f09d4e5a0012ab35a0
+                  status: QUEUED
+                  queued: true
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: '`AUDIT_QUEUE_UNAVAILABLE`: the job was not queued within 5 s; the audit is `FAILED`; `details.auditId`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /admin/platform-audits/{id}:
+    get:
+      tags:
+        - Admin
+      operationId: getPlatformAudit
+      summary: A platform audit by its id
+      description: Platform administrators only. An audit that a studio's lead ran answers the same `404` as an unknown id.
+      parameters:
+        - $ref: '#/components/parameters/ObjectIdPath'
+      responses:
+        '200':
+          description: The platform audit
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                properties:
+                  success:
+                    type: boolean
+                    enum:
+                      - true
+                  data:
+                    $ref: '#/components/schemas/PlatformAudit'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: '`PLATFORM_AUDIT_NOT_FOUND`: no platform audit with this id (also for an invalid id or an audit of a lead)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /admin/lots:
+    post:
+      tags:
+        - Admin
+      operationId: createLot
+      summary: Make a DRAFT lot from the newest completed audit of a business
+      description: |
+        Platform administrators only. The price and band are computed by code from the audit (`priceFromAudit`,
+        REV-231), never by a model. Eligibility (the business has not opted out, no contact right or cooldown is in
+        force, it has a city) is checked as a write on the business in the same transaction as the insert.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLot'
+            example:
+              businessId: 6740a1f09d4e5a0012ab35a0
+      responses:
+        '201':
+          description: The new lot, `DRAFT`
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                properties:
+                  success:
+                    type: boolean
+                    enum:
+                      - true
+                  data:
+                    $ref: '#/components/schemas/Lot'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: |
+            `NO_COMPLETED_PLATFORM_AUDIT` (the business has no completed audit), `LOT_NOT_PRICEABLE` (the audit
+            measured no price signal), `LOT_NOT_ELIGIBLE` (opted out, held by a studio, in cooldown, or no city) or
+            `LOT_ALREADY_LIVE` (a `DRAFT`, `OPEN` or `RESERVED` lot exists)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error:
+                  code: LOT_ALREADY_LIVE
+                  message: The business already has a live lot
+    get:
+      tags:
+        - Admin
+      operationId: listLots
+      summary: List lots, newest first
+      description: Platform administrators only.
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/LotStatus'
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: A page of lots
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                  - pagination
+                properties:
+                  success:
+                    type: boolean
+                    enum:
+                      - true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Lot'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/lots/{id}/open:
+    post:
+      tags:
+        - Admin
+      operationId: openLot
+      summary: Offer a DRAFT lot to studios
+      description: |
+        Platform administrators only. `DRAFT` to `OPEN` only; `releaseAt` defaults to now. A business that opted
+        out, was claimed by a studio or is in cooldown since the lot was made answers `409 LOT_NOT_ELIGIBLE`.
+      parameters:
+        - $ref: '#/components/parameters/ObjectIdPath'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenLot'
+            example:
+              releaseAt: '2026-12-01T09:00:00.000Z'
+      responses:
+        '200':
+          description: The open lot
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                properties:
+                  success:
+                    type: boolean
+                    enum:
+                      - true
+                  data:
+                    $ref: '#/components/schemas/Lot'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: '`LOT_NOT_FOUND`: no lot with this id (also for an invalid id)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: '`LOT_TRANSITION_NOT_ALLOWED` (the lot is not `DRAFT`) or `LOT_NOT_ELIGIBLE`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /admin/lots/{id}/withdraw:
+    post:
+      tags:
+        - Admin
+      operationId: withdrawLot
+      summary: Withdraw a live lot
+      description: |
+        Platform administrators only. `DRAFT`, `OPEN` or `RESERVED` to `WITHDRAWN` with `withdrawReason: admin`; the
+        business's live-lot slot is freed. `SOLD` and `WITHDRAWN` lots cannot change.
+      parameters:
+        - $ref: '#/components/parameters/ObjectIdPath'
+      responses:
+        '200':
+          description: The withdrawn lot
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                properties:
+                  success:
+                    type: boolean
+                    enum:
+                      - true
+                  data:
+                    $ref: '#/components/schemas/Lot'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: '`LOT_NOT_FOUND`: no lot with this id (also for an invalid id)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: '`LOT_TRANSITION_NOT_ALLOWED`: the lot is `SOLD` or `WITHDRAWN`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /track/open/{token}.gif:
     get:
       tags:
@@ -2156,7 +2475,7 @@ components:
               code: UNAUTHENTICATED
               message: Sign in to use the API
     Forbidden:
-      description: '`FORBIDDEN`: a viewer tried to change data, or a non-owner called `/organization/*`'
+      description: '`FORBIDDEN`: a viewer tried to change data, a non-owner called `/organization/*`, or a user who is not a platform administrator called `/admin/*`'
       content:
         application/json:
           schema:
@@ -2367,6 +2686,13 @@ components:
         - CONTACT_RIGHT_HELD
         - BUSINESS_IN_COOLDOWN
         - BUSINESS_OPTED_OUT
+        - LOT_NOT_FOUND
+        - LOT_NOT_ELIGIBLE
+        - LOT_ALREADY_LIVE
+        - LOT_NOT_PRICEABLE
+        - LOT_TRANSITION_NOT_ALLOWED
+        - PLATFORM_AUDIT_NOT_FOUND
+        - NO_COMPLETED_PLATFORM_AUDIT
     ErrorResponse:
       type: object
       required:
@@ -2461,6 +2787,9 @@ components:
               type: string
         role:
           $ref: '#/components/schemas/Role'
+        platformAdmin:
+          type: boolean
+          description: Only in `GET /auth/me`. True when the user's email is in `PLATFORM_ADMIN_EMAILS` (REV-232); only then do `/admin/*` routes answer
     AuthSession:
       allOf:
         - $ref: '#/components/schemas/AuthContext'
@@ -2769,6 +3098,173 @@ components:
           description: Count per status; statuses with no lead are absent
           additionalProperties:
             type: integer
+    PlatformAuditRequest:
+      type: object
+      required:
+        - auditId
+        - businessId
+        - status
+        - queued
+      properties:
+        auditId:
+          $ref: '#/components/schemas/ObjectId'
+        businessId:
+          $ref: '#/components/schemas/ObjectId'
+        status:
+          type: string
+          enum:
+            - QUEUED
+            - PROCESSING
+            - COMPLETED
+            - FAILED
+        queued:
+          type: boolean
+          description: True when this request queued a new job
+    PlatformAudit:
+      type: object
+      description: The result of a platform audit (an `Audit` with no `leadId`)
+      required:
+        - auditId
+        - status
+        - measurementErrors
+      properties:
+        auditId:
+          $ref: '#/components/schemas/ObjectId'
+        businessId:
+          $ref: '#/components/schemas/ObjectId'
+        status:
+          type: string
+          enum:
+            - QUEUED
+            - PROCESSING
+            - COMPLETED
+            - FAILED
+        scores:
+          type: object
+          additionalProperties: true
+          description: Same pillar scores as `Audit.scores`; a failed measurement is absent
+        measurementErrors:
+          type: array
+          items:
+            type: object
+            required:
+              - measurement
+              - message
+            properties:
+              measurement:
+                type: string
+                enum:
+                  - performance
+                  - accessibility
+                  - standards
+                  - design
+              message:
+                type: string
+        completedAt:
+          type: string
+          format: date-time
+        errorMessage:
+          type: string
+    LotStatus:
+      type: string
+      description: |
+        `DRAFT` to `OPEN` or `WITHDRAWN`; `OPEN` to `RESERVED` or `WITHDRAWN`; `RESERVED` to `OPEN`, `SOLD` or
+        `WITHDRAWN`; `SOLD` and `WITHDRAWN` are final (`LOT_TRANSITIONS`)
+      enum:
+        - DRAFT
+        - OPEN
+        - RESERVED
+        - SOLD
+        - WITHDRAWN
+    Lot:
+      type: object
+      description: '`ILot` in `@revamp/shared-types`. A priced offer of one business and its audit; the platform owns it until a studio buys it.'
+      required:
+        - _id
+        - businessId
+        - auditId
+        - niche
+        - city
+        - priceCents
+        - currency
+        - band
+        - need
+        - priceSignals
+        - status
+        - createdAt
+        - updatedAt
+      properties:
+        _id:
+          $ref: '#/components/schemas/ObjectId'
+        businessId:
+          $ref: '#/components/schemas/ObjectId'
+        auditId:
+          $ref: '#/components/schemas/ObjectId'
+        niche:
+          $ref: '#/components/schemas/Niche'
+        city:
+          type: string
+          maxLength: 100
+        priceCents:
+          type: integer
+          minimum: 0
+          description: In minor units of `currency`
+        currency:
+          type: string
+          example: EUR
+        band:
+          type: string
+          enum:
+            - A
+            - B
+            - C
+            - D
+          description: A is the strongest case for a redesign
+        need:
+          type: number
+          minimum: 0
+          maximum: 1
+        priceSignals:
+          type: array
+          items:
+            type: object
+            required:
+              - signal
+              - value
+              - need
+              - weight
+            properties:
+              signal:
+                type: string
+              value:
+                type: number
+              need:
+                type: number
+              weight:
+                type: number
+        status:
+          $ref: '#/components/schemas/LotStatus'
+        releaseAt:
+          type: string
+          format: date-time
+        withdrawnAt:
+          type: string
+          format: date-time
+        withdrawReason:
+          type: string
+          enum:
+            - admin
+            - claimed_by_studio
+            - opted_out
+        live:
+          type: boolean
+          description: True while the lot is `DRAFT`, `OPEN` or `RESERVED`; absent after `SOLD` or `WITHDRAWN`
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
     Pagination:
       type: object
       required:
@@ -2794,7 +3290,6 @@ components:
         Nested objects are summarised here; their full shape is in `database-expertise.md` §4.2.
       required:
         - _id
-        - leadId
         - status
         - createdAt
       properties:
@@ -2802,6 +3297,7 @@ components:
           $ref: '#/components/schemas/ObjectId'
         leadId:
           $ref: '#/components/schemas/ObjectId'
+          description: Absent on a platform audit (REV-232)
         businessId:
           $ref: '#/components/schemas/ObjectId'
         status:
@@ -3677,6 +4173,53 @@ components:
             - lt
       required:
         - externalIds
+    CreatePlatformAudit:
+      type: object
+      properties:
+        url:
+          type: string
+          maxLength: 2048
+          format: uri
+        businessName:
+          type: string
+          minLength: 1
+          maxLength: 100
+        niche:
+          type: string
+          enum:
+            - dental
+            - auto
+            - legal
+            - beauty
+            - construction
+            - medical
+            - restaurant
+            - fitness
+            - real_estate
+            - other
+        city:
+          type: string
+          minLength: 1
+          maxLength: 100
+      required:
+        - url
+        - businessName
+        - niche
+        - city
+    CreateLot:
+      type: object
+      properties:
+        businessId:
+          type: string
+          pattern: ^[a-f\d]{24}$
+      required:
+        - businessId
+    OpenLot:
+      type: object
+      properties:
+        releaseAt:
+          type: string
+          format: date-time
     MvpTrackEvent:
       type: object
       properties:
